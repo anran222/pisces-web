@@ -25,7 +25,7 @@ npm install
 npm run dev
 ```
 
-前端将在 http://localhost:3000 启动，并自动代理 `/api` 请求到后端 http://localhost:9990
+前端将在 http://localhost:3039 启动，并自动代理 `/api` 请求到后端 http://localhost:9990
 
 ### 3. 启动后端服务
 

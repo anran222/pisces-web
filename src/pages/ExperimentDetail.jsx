@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { 
+import {
   ArrowLeft,
   Play,
   Pause,
@@ -8,10 +8,10 @@ import {
   RotateCcw,
   BarChart3,
   Settings,
-  Users,
   TrendingUp,
   Clock,
-  Layers
+  Layers,
+  Sparkles
 } from 'lucide-react'
 import { experimentAPI, analysisAPI, trafficAPI } from '../services/api'
 
@@ -19,7 +19,7 @@ const statusConfig = {
   RUNNING: { badge: 'badge-running', text: '运行中' },
   DRAFT: { badge: 'badge-draft', text: '草稿' },
   PAUSED: { badge: 'badge-paused', text: '已暂停' },
-  STOPPED: { badge: 'badge-stopped', text: '已停止' },
+  STOPPED: { badge: 'badge-stopped', text: '已停止' }
 }
 
 export default function ExperimentDetail() {
@@ -29,6 +29,8 @@ export default function ExperimentDetail() {
   const [statistics, setStatistics] = useState(null)
   const [mabSummary, setMabSummary] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [actionLoading, setActionLoading] = useState(false)
+  const [statsError, setStatsError] = useState('')
 
   useEffect(() => {
     loadData()
@@ -37,19 +39,32 @@ export default function ExperimentDetail() {
   const loadData = async () => {
     try {
       setLoading(true)
-      const [expRes, statsRes] = await Promise.all([
+      setStatsError('')
+
+      const [expRes, statsRes] = await Promise.allSettled([
         experimentAPI.get(id),
-        analysisAPI.getStatistics(id).catch(() => null)
+        analysisAPI.getStatistics(id)
       ])
-      setExperiment(expRes.data)
-      setStatistics(statsRes?.data)
-      
-      // 尝试加载MAB数据
+
+      if (expRes.status === 'fulfilled') {
+        setExperiment(expRes.value.data || expRes.value)
+      } else {
+        throw expRes.reason
+      }
+
+      if (statsRes.status === 'fulfilled') {
+        setStatistics(statsRes.value.data || statsRes.value)
+      } else {
+        setStatistics(null)
+        setStatsError(statsRes.reason?.response?.data?.message || statsRes.reason?.message || '暂无统计数据')
+      }
+
       try {
         const mabRes = await trafficAPI.getMABSummary(id)
-        setMabSummary(mabRes.data)
-      } catch (e) {
+        setMabSummary(mabRes.data || mabRes)
+      } catch (error) {
         console.log('MAB data not available')
+        setMabSummary(null)
       }
     } catch (error) {
       console.error('Failed to load experiment:', error)
@@ -60,6 +75,7 @@ export default function ExperimentDetail() {
 
   const handleAction = async (action) => {
     try {
+      setActionLoading(true)
       switch (action) {
         case 'start':
           await experimentAPI.start(id)
@@ -74,9 +90,27 @@ export default function ExperimentDetail() {
           await experimentAPI.stop(id)
           break
       }
-      loadData()
+      await loadData()
     } catch (error) {
       alert('操作失败: ' + (error.response?.data?.message || error.message))
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  const handleGenerateData = async () => {
+    try {
+      setActionLoading(true)
+      const response = await experimentAPI.simulateData(id, {
+        visitorCount: 150,
+        daysAgo: 7
+      })
+      alert(response.message || '实验数据生成完成')
+      await loadData()
+    } catch (error) {
+      alert('生成实验数据失败: ' + (error.response?.data?.message || error.message))
+    } finally {
+      setActionLoading(false)
     }
   }
 
@@ -104,7 +138,6 @@ export default function ExperimentDetail() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex items-center gap-4">
         <button
           onClick={() => navigate('/experiments')}
@@ -119,39 +152,41 @@ export default function ExperimentDetail() {
           </div>
           <p className="text-slate-400 text-sm font-mono mt-1">{experiment.id}</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap justify-end gap-2">
           {experiment.status === 'DRAFT' && (
-            <button onClick={() => handleAction('start')} className="btn-primary flex items-center gap-2">
+            <button disabled={actionLoading} onClick={() => handleAction('start')} className="btn-primary flex items-center gap-2 disabled:opacity-60">
               <Play size={16} /> 启动
             </button>
           )}
           {experiment.status === 'RUNNING' && (
             <>
-              <button onClick={() => handleAction('pause')} className="btn-secondary flex items-center gap-2">
+              <button disabled={actionLoading} onClick={() => handleAction('pause')} className="btn-secondary flex items-center gap-2 disabled:opacity-60">
                 <Pause size={16} /> 暂停
               </button>
-              <button onClick={() => handleAction('stop')} className="btn-secondary flex items-center gap-2 text-red-400">
+              <button disabled={actionLoading} onClick={() => handleAction('stop')} className="btn-secondary flex items-center gap-2 text-red-400 disabled:opacity-60">
                 <Square size={16} /> 停止
               </button>
             </>
           )}
           {experiment.status === 'PAUSED' && (
             <>
-              <button onClick={() => handleAction('resume')} className="btn-primary flex items-center gap-2">
+              <button disabled={actionLoading} onClick={() => handleAction('resume')} className="btn-primary flex items-center gap-2 disabled:opacity-60">
                 <RotateCcw size={16} /> 恢复
               </button>
-              <button onClick={() => handleAction('stop')} className="btn-secondary flex items-center gap-2 text-red-400">
+              <button disabled={actionLoading} onClick={() => handleAction('stop')} className="btn-secondary flex items-center gap-2 text-red-400 disabled:opacity-60">
                 <Square size={16} /> 停止
               </button>
             </>
           )}
+          <button disabled={actionLoading} onClick={handleGenerateData} className="btn-secondary flex items-center gap-2 disabled:opacity-60">
+            <Sparkles size={16} /> 生成实验数据
+          </button>
           <Link to={`/analysis/${id}`} className="btn-secondary flex items-center gap-2">
             <BarChart3 size={16} /> 详细分析
           </Link>
         </div>
       </div>
 
-      {/* Info Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="glass-card p-6">
           <div className="flex items-center gap-3 mb-4">
@@ -161,15 +196,15 @@ export default function ExperimentDetail() {
             <span className="text-slate-400">实验时间</span>
           </div>
           <div className="space-y-2 text-sm">
-            <div className="flex justify-between">
+            <div className="flex justify-between gap-4">
               <span className="text-slate-500">开始时间</span>
-              <span className="text-white">
+              <span className="text-white text-right">
                 {experiment.startTime ? new Date(experiment.startTime).toLocaleString() : '-'}
               </span>
             </div>
-            <div className="flex justify-between">
+            <div className="flex justify-between gap-4">
               <span className="text-slate-500">结束时间</span>
-              <span className="text-white">
+              <span className="text-white text-right">
                 {experiment.endTime ? new Date(experiment.endTime).toLocaleString() : '-'}
               </span>
             </div>
@@ -187,9 +222,7 @@ export default function ExperimentDetail() {
             {experiment.groups && Object.entries(experiment.groups).map(([groupId, group]) => (
               <div key={groupId} className="flex items-center justify-between text-sm">
                 <span className="text-white">{group.name || groupId}</span>
-                <span className="text-slate-400">
-                  {(group.trafficRatio * 100).toFixed(0)}%
-                </span>
+                <span className="text-slate-400">{((group.trafficRatio || 0) * 100).toFixed(0)}%</span>
               </div>
             ))}
           </div>
@@ -209,16 +242,13 @@ export default function ExperimentDetail() {
             </div>
             <div className="flex justify-between">
               <span className="text-slate-500">总流量</span>
-              <span className="text-white">
-                {((experiment.traffic?.totalTraffic || 1) * 100).toFixed(0)}%
-              </span>
+              <span className="text-white">{((experiment.traffic?.totalTraffic || 1) * 100).toFixed(0)}%</span>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Statistics */}
-      {statistics && statistics.groupStatistics && (
+      {statistics?.groupStatistics ? (
         <div className="glass-card p-6">
           <h2 className="text-xl font-semibold text-white mb-6 flex items-center gap-2">
             <TrendingUp size={20} className="text-pisces-400" />
@@ -240,9 +270,7 @@ export default function ExperimentDetail() {
                   </div>
                   <div>
                     <p className="text-slate-500">转化率</p>
-                    <p className="text-lg font-semibold text-emerald-400">
-                      {((stats.conversionRate || 0) * 100).toFixed(2)}%
-                    </p>
+                    <p className="text-lg font-semibold text-emerald-400">{((stats.conversionRate || 0) * 100).toFixed(2)}%</p>
                   </div>
                   <div>
                     <p className="text-slate-500">点击数</p>
@@ -267,9 +295,17 @@ export default function ExperimentDetail() {
             ))}
           </div>
         </div>
+      ) : (
+        <div className="glass-card p-8 text-center">
+          <Sparkles size={40} className="mx-auto text-slate-600 mb-4" />
+          <p className="text-white font-medium mb-2">还没有真实统计数据</p>
+          <p className="text-slate-400 text-sm mb-4">{statsError || '先生成实验数据，再查看实验表现。'}</p>
+          <button disabled={actionLoading} onClick={handleGenerateData} className="btn-primary inline-flex items-center gap-2 disabled:opacity-60">
+            <Sparkles size={16} /> 立即生成数据
+          </button>
+        </div>
       )}
 
-      {/* MAB Summary */}
       {mabSummary && (
         <div className="glass-card p-6">
           <h2 className="text-xl font-semibold text-white mb-6 flex items-center gap-2">
@@ -300,7 +336,6 @@ export default function ExperimentDetail() {
         </div>
       )}
 
-      {/* Description */}
       {experiment.description && (
         <div className="glass-card p-6">
           <h2 className="text-lg font-semibold text-white mb-3">实验描述</h2>

@@ -34,6 +34,7 @@ import {
   Area
 } from 'recharts'
 import { experimentAPI, analysisAPI } from '../services/api'
+import { buildTimelineChartData } from '../utils/analysisTransformers'
 
 const COLORS = ['#0ea5e9', '#8b5cf6', '#ec4899', '#10b981', '#f97316']
 
@@ -51,6 +52,7 @@ export default function Analysis() {
   const [timeline, setTimeline] = useState(null)
   const [loading, setLoading] = useState(true)
   const [aiLoading, setAiLoading] = useState(false)
+  const [aiError, setAiError] = useState('')
   const [activeTab, setActiveTab] = useState('overview')
 
   const goToAIInsights = () => {
@@ -131,53 +133,38 @@ export default function Analysis() {
   const loadAIInsights = async () => {
     try {
       setAiLoading(true)
-      
-      // 使用 Promise.allSettled 避免单个请求失败导致全部失败
+      setAiError('')
+
       const [insightsRes, gradRes, predRes] = await Promise.allSettled([
         analysisAPI.getAIInsights(id),
         analysisAPI.autoGraduateDecision(id),
         analysisAPI.predictCompletion(id)
       ])
-      
-      // 处理每个请求的结果
+
       if (insightsRes.status === 'fulfilled') {
         setAiInsights(insightsRes.value.data || insightsRes.value)
       } else {
-        console.error('AI insights failed:', insightsRes.reason)
-        // 设置默认数据避免页面空白
-        setAiInsights({
-          success: false,
-          aiAnalysis: '## 暂无分析数据\n\n实验数据尚未收集或服务暂时不可用，请稍后重试。\n\n### 可能的原因\n- 实验刚创建，还没有收集到数据\n- 后端服务未启动\n- 网络连接问题',
-          keyInsights: { readyForDecision: false },
-          dataSummary: { healthScore: 0, healthStatus: '无数据' },
-          recommendations: []
-        })
+        setAiInsights(null)
+        setAiError(insightsRes.reason?.response?.data?.message || insightsRes.reason?.message || 'AI 智能分析失败')
       }
-      
+
       if (gradRes.status === 'fulfilled') {
         setGraduation(gradRes.value.data || gradRes.value)
       } else {
-        console.error('Graduation decision failed:', gradRes.reason)
-        setGraduation({ canGraduate: false, reasons: ['无法获取决策数据'] })
+        setGraduation(null)
       }
-      
+
       if (predRes.status === 'fulfilled') {
         setPrediction(predRes.value.data || predRes.value)
       } else {
-        console.error('Prediction failed:', predRes.reason)
-        setPrediction({ status: 'UNKNOWN', message: '无法获取预测数据' })
+        setPrediction(null)
       }
-      
     } catch (error) {
       console.error('Failed to load AI insights:', error)
-      // 设置默认数据避免页面空白
-      setAiInsights({
-        success: false,
-        aiAnalysis: '## 加载失败\n\n无法加载AI分析数据，请检查后端服务是否正常运行。',
-        keyInsights: {},
-        dataSummary: {},
-        recommendations: []
-      })
+      setAiInsights(null)
+      setGraduation(null)
+      setPrediction(null)
+      setAiError(error.response?.data?.message || error.message || 'AI 智能分析失败')
     } finally {
       setAiLoading(false)
     }
@@ -236,13 +223,7 @@ export default function Analysis() {
     })) : []
 
   // 准备时间线图表数据
-  const timelineData = timeline?.dataPoints ?
-    timeline.dataPoints.map((point, idx) => ({
-      time: `Day ${idx + 1}`,
-      ...Object.fromEntries(
-        Object.entries(point.values || {}).map(([k, v]) => [k, (v * 100).toFixed(2)])
-      )
-    })) : []
+  const timelineData = buildTimelineChartData(timeline)
 
   return (
     <div className="space-y-6">
@@ -460,6 +441,12 @@ export default function Analysis() {
             </div>
           ) : (
             <>
+              {aiError && (
+                <div className="glass-card p-4 border border-red-500/30 bg-red-500/10">
+                  <p className="text-red-300">{aiError}</p>
+                </div>
+              )}
+
               {/* Data Summary Cards */}
               {aiInsights?.dataSummary && (
                 <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
@@ -587,7 +574,7 @@ export default function Analysis() {
                   </h3>
                   <div className="prose prose-invert max-w-none">
                     <div className="whitespace-pre-wrap text-slate-300 leading-relaxed bg-slate-800/50 rounded-xl p-6">
-                      {aiInsights.aiAnalysis || aiInsights.fallbackAnalysis?.recommendation || '暂无分析结果'}
+                      {aiInsights.aiAnalysis || '暂无分析结果'}
                     </div>
                   </div>
                 </div>
@@ -845,6 +832,9 @@ export default function Analysis() {
               <Clock size={20} className="text-amber-400" />
               转化率趋势
             </h3>
+            {timeline?.note && (
+              <p className="text-slate-400 text-sm mb-4">{timeline.note}</p>
+            )}
             {timelineData.length > 0 ? (
               <div className="h-80">
                 <ResponsiveContainer width="100%" height="100%">

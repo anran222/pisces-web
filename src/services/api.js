@@ -53,6 +53,9 @@ export const experimentAPI = {
   
   // 恢复实验
   resume: (id) => api.post(`/experiments/${id}/resume`),
+
+  // 为已有实验生成真实事件数据
+  simulateData: (id, data) => api.post(`/experiments/generator/${id}/simulate`, data),
   
   // 批量暂停实验
   batchPause: (ids) => api.post('/experiments/batch/pause', ids),

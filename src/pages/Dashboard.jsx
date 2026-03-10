@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { 
-  FlaskConical, 
-  Users, 
-  TrendingUp, 
+import {
+  FlaskConical,
+  Users,
+  TrendingUp,
   Activity,
   ArrowRight,
   Sparkles,
@@ -12,9 +12,10 @@ import {
   CheckCircle
 } from 'lucide-react'
 import { experimentAPI, analysisAPI } from '../services/api'
+import { buildDashboardMetrics } from '../utils/experimentMetrics'
 
 const StatCard = ({ title, value, subtitle, icon: Icon, color, delay }) => (
-  <div 
+  <div
     className="glass-card p-6 animate-fade-in"
     style={{ animationDelay: `${delay}ms` }}
   >
@@ -36,9 +37,9 @@ const ExperimentRow = ({ experiment, index }) => {
     RUNNING: { badge: 'badge-running', icon: Play, text: '运行中' },
     DRAFT: { badge: 'badge-draft', icon: Activity, text: '草稿' },
     PAUSED: { badge: 'badge-paused', icon: Pause, text: '已暂停' },
-    STOPPED: { badge: 'badge-stopped', icon: CheckCircle, text: '已停止' },
+    STOPPED: { badge: 'badge-stopped', icon: CheckCircle, text: '已停止' }
   }
-  
+
   const status = statusConfig[experiment.status] || statusConfig.DRAFT
 
   return (
@@ -87,19 +88,28 @@ export default function Dashboard() {
     try {
       setLoading(true)
       const response = await experimentAPI.list()
-      const experimentList = response.data || []
+      const experimentList = response.data || response || []
       setExperiments(experimentList)
-      
-      // 计算统计数据
-      const running = experimentList.filter(e => e.status === 'RUNNING').length
-      setStats({
-        total: experimentList.length,
-        running,
-        visitors: experimentList.length * 150, // 模拟数据
-        conversions: Math.floor(experimentList.length * 15) // 模拟数据
-      })
+
+      const statsResults = await Promise.allSettled(
+        experimentList.map(async experiment => {
+          const statsResponse = await analysisAPI.getStatistics(experiment.id)
+          return [experiment.id, statsResponse.data || statsResponse]
+        })
+      )
+
+      const statisticsByExperiment = statsResults.reduce((accumulator, result) => {
+        if (result.status === 'fulfilled') {
+          const [experimentId, statistic] = result.value
+          accumulator[experimentId] = statistic
+        }
+        return accumulator
+      }, {})
+
+      setStats(buildDashboardMetrics(experimentList, statisticsByExperiment))
     } catch (error) {
       console.error('Failed to load experiments:', error)
+      setStats({ total: 0, running: 0, visitors: 0, conversions: 0 })
     } finally {
       setLoading(false)
     }
@@ -107,7 +117,6 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-8">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-display font-bold gradient-text">仪表盘</h1>
@@ -119,43 +128,13 @@ export default function Dashboard() {
         </Link>
       </div>
 
-      {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <StatCard
-          title="总实验数"
-          value={stats.total}
-          subtitle="所有实验"
-          icon={FlaskConical}
-          color="text-pisces-400"
-          delay={0}
-        />
-        <StatCard
-          title="运行中"
-          value={stats.running}
-          subtitle="正在进行"
-          icon={Activity}
-          color="text-emerald-400"
-          delay={100}
-        />
-        <StatCard
-          title="总访客数"
-          value={stats.visitors.toLocaleString()}
-          subtitle="累计参与"
-          icon={Users}
-          color="text-accent-purple"
-          delay={200}
-        />
-        <StatCard
-          title="总转化数"
-          value={stats.conversions.toLocaleString()}
-          subtitle="成功转化"
-          icon={TrendingUp}
-          color="text-accent-pink"
-          delay={300}
-        />
+        <StatCard title="总实验数" value={stats.total} subtitle="所有实验" icon={FlaskConical} color="text-pisces-400" delay={0} />
+        <StatCard title="运行中" value={stats.running} subtitle="正在进行" icon={Activity} color="text-emerald-400" delay={100} />
+        <StatCard title="总访客数" value={stats.visitors.toLocaleString()} subtitle="真实累计参与" icon={Users} color="text-accent-purple" delay={200} />
+        <StatCard title="总转化数" value={stats.conversions.toLocaleString()} subtitle="真实累计转化" icon={TrendingUp} color="text-accent-pink" delay={300} />
       </div>
 
-      {/* Recent Experiments */}
       <div className="glass-card p-6">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-xl font-semibold text-white">最近实验</h2>
@@ -163,7 +142,7 @@ export default function Dashboard() {
             查看全部 <ArrowRight size={14} />
           </Link>
         </div>
-        
+
         {loading ? (
           <div className="space-y-4">
             {[1, 2, 3].map(i => (
@@ -188,7 +167,6 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Quick Actions */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <Link to="/variants" className="glass-card p-6 group">
           <div className="flex items-center gap-4">
@@ -203,7 +181,7 @@ export default function Dashboard() {
             </div>
           </div>
         </Link>
-        
+
         <Link to="/experiments" className="glass-card p-6 group">
           <div className="flex items-center gap-4">
             <div className="p-4 rounded-xl bg-gradient-to-br from-pisces-500/20 to-pisces-600/20">

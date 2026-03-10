@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { 
   Sparkles,
   Wand2,
@@ -12,12 +13,17 @@ import {
   Palette,
   Edit3,
   X,
-  Download
+  Download,
+  ArrowRight,
+  BarChart3
 } from 'lucide-react'
 import { variantAPI } from '../services/api'
 import clsx from 'clsx'
 
+const SUPPORTED_IMAGE_TYPES = ['image/jpeg', 'image/png']
+
 export default function VariantGenerator() {
+  const navigate = useNavigate()
   const [mode, setMode] = useState('text') // text, image, image-upload, style-transfer, flow
   const [prompt, setPrompt] = useState('')
   const [count, setCount] = useState(5)
@@ -28,7 +34,7 @@ export default function VariantGenerator() {
   // 图片上传相关
   const [uploadedImage, setUploadedImage] = useState(null)
   const [uploadedImageBase64, setUploadedImageBase64] = useState('')
-  const [selectedStyle, setSelectedStyle] = useState('cartoon')
+  const [selectedStyle, setSelectedStyle] = useState('french-book')
   const [imageStyles, setImageStyles] = useState([])
   const fileInputRef = useRef(null)
 
@@ -48,19 +54,45 @@ export default function VariantGenerator() {
   const loadImageStyles = async () => {
     try {
       const response = await variantAPI.getImageStyles()
-      setImageStyles(response.data || [])
+      const styles = response.data || response || []
+      setImageStyles(styles)
+      if (styles.length > 0 && !styles.some(style => style.id === selectedStyle)) {
+        setSelectedStyle(styles[0].id)
+      }
     } catch (error) {
-      // 使用默认风格列表
-      setImageStyles([
-        { id: 'cartoon', name: '卡通风格', description: '色彩鲜艳的卡通漫画效果' },
-        { id: 'oil-painting', name: '油画风格', description: '厚重笔触的印象派油画' },
-        { id: 'sketch', name: '素描风格', description: '黑白铅笔素描效果' },
-        { id: 'anime', name: '动漫风格', description: '日本动漫风格' },
-        { id: 'watercolor', name: '水彩风格', description: '柔和的水彩画效果' },
-        { id: 'pixel', name: '像素风格', description: '8bit复古像素艺术' },
-        { id: '3d', name: '3D风格', description: '立体3D渲染效果' },
-        { id: 'minimalist', name: '极简风格', description: '简洁线条的极简设计' },
-      ])
+      console.error('Failed to load styles:', error)
+      setImageStyles([])
+      alert('加载风格列表失败: ' + (error.response?.data?.message || error.message))
+    }
+  }
+
+  const normalizeFlowResult = (responseData) => ({
+    ...responseData,
+    experimentName: responseData.experimentName || responseData.experimentId,
+    analysisSummary: responseData.analysisSummary || '',
+    variants: Array.isArray(responseData.variants) ? responseData.variants : []
+  })
+
+  const normalizeStyleTransferResult = (responseData) => {
+    if (typeof responseData === 'string') {
+      const fileName = `style-${selectedStyle}.png`
+      const encodedUrl = encodeURIComponent(responseData)
+      const encodedFileName = encodeURIComponent(fileName)
+      return {
+        originalImageUrl: uploadedImage,
+        resultImageUrl: responseData,
+        downloadFileName: fileName,
+        downloadUrl: `/api/variants/image/download?url=${encodedUrl}&fileName=${encodedFileName}`,
+        style: selectedStyle
+      }
+    }
+
+    return {
+      originalImageUrl: uploadedImage,
+      resultImageUrl: responseData?.resultImageUrl || responseData?.data || '',
+      downloadFileName: responseData?.downloadFileName || `style-${selectedStyle}.png`,
+      downloadUrl: responseData?.downloadUrl || '',
+      style: responseData?.style || selectedStyle
     }
   }
 
@@ -68,6 +100,14 @@ export default function VariantGenerator() {
   const handleImageUpload = (e) => {
     const file = e.target.files[0]
     if (file) {
+      if (!SUPPORTED_IMAGE_TYPES.includes(file.type)) {
+        alert('当前图生图和风格转换仅支持 JPG、PNG 图片格式')
+        if (fileInputRef.current) {
+          fileInputRef.current.value = ''
+        }
+        return
+      }
+
       if (file.size > 10 * 1024 * 1024) {
         alert('图片大小不能超过10MB')
         return
@@ -99,7 +139,7 @@ export default function VariantGenerator() {
 
     // 其他模式需要提示词
     if (mode !== 'style-transfer' && !prompt.trim()) {
-      alert('请输入生成提示词')
+        alert(mode === 'image-upload' ? '请输入图生图提示词' : '请输入生成提示词')
       return
     }
 
@@ -133,6 +173,10 @@ export default function VariantGenerator() {
       // 如果响应是数组（图片URL列表），包装成对象
       if (Array.isArray(responseData)) {
         setResults({ data: responseData })
+      } else if (mode === 'flow') {
+        setResults(normalizeFlowResult(responseData))
+      } else if (mode === 'style-transfer') {
+        setResults(normalizeStyleTransferResult(responseData))
       } else {
         setResults(responseData)
       }
@@ -238,7 +282,7 @@ export default function VariantGenerator() {
                 >
                   <Upload size={48} className="mx-auto text-slate-500 mb-4" />
                   <p className="text-slate-400 mb-2">点击或拖拽上传图片</p>
-                  <p className="text-slate-500 text-sm">支持 JPG、PNG、GIF，最大 10MB</p>
+                  <p className="text-slate-500 text-sm">当前仅支持 JPG、PNG，最大 10MB</p>
                 </div>
               ) : (
                 <div className="relative">
@@ -258,7 +302,7 @@ export default function VariantGenerator() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/*"
+                accept="image/jpeg,image/png"
                 onChange={handleImageUpload}
                 className="hidden"
               />
@@ -294,7 +338,7 @@ export default function VariantGenerator() {
         {mode !== 'style-transfer' && (
           <div>
             <label className="block text-sm text-slate-400 mb-2">
-              {mode === 'flow' ? '实验主题' : mode === 'image-upload' ? '修改提示词（可选）' : '生成提示词'}
+              {mode === 'flow' ? '实验主题' : mode === 'image-upload' ? '图生图提示词' : '生成提示词'}
             </label>
             <textarea
               value={prompt}
@@ -305,7 +349,7 @@ export default function VariantGenerator() {
                   : mode === 'image'
                   ? "例如：电商商品主图，白色背景，专业摄影风格"
                   : mode === 'image-upload'
-                  ? "例如：调整背景为纯白色，增加光影效果，优化商品展示"
+                  ? "例如：将人物整体转换为黑白插画风格，保留主体轮廓，背景也同步改为黑白"
                   : "例如：二手手机价格展示方式测试"
               }
               className="input min-h-[100px] resize-none"
@@ -530,7 +574,7 @@ export default function VariantGenerator() {
                       <div className="w-full h-full flex items-center justify-center">
                         <div className="text-center p-4">
                           <Image size={32} className="mx-auto text-slate-600 mb-2" />
-                          <p className="text-slate-500 text-xs">模拟图片</p>
+                          <p className="text-slate-500 text-xs">未返回可展示图片</p>
                         </div>
                       </div>
                     )}
@@ -541,47 +585,68 @@ export default function VariantGenerator() {
           )}
 
           {/* Style Transfer Result */}
-          {mode === 'style-transfer' && results.data && (
+          {mode === 'style-transfer' && results?.resultImageUrl && (
             <div className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="flex items-center justify-between gap-4 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
                 <div>
-                  <p className="text-sm text-slate-400 mb-2">原始图片</p>
-                  <img
-                    src={uploadedImage}
-                    alt="Original"
-                    className="w-full rounded-xl border border-slate-700"
-                  />
-                </div>
-                <div>
-                  <p className="text-sm text-slate-400 mb-2">
-                    {imageStyles.find(s => s.id === selectedStyle)?.name || selectedStyle} 风格
+                  <p className="text-white font-medium">风格转换结果已生成</p>
+                  <p className="text-sm text-slate-400 mt-1">
+                    当前风格：{imageStyles.find(s => s.id === results.style)?.name || results.style}
                   </p>
-                  {results.data.startsWith('http') ? (
-                    <div className="relative group">
-                      <img
-                        src={results.data}
-                        alt="Styled"
-                        className="w-full rounded-xl border border-amber-500/50"
-                      />
+                </div>
+                {results.downloadUrl && (
+                  <a
+                    href={results.downloadUrl}
+                    download={results.downloadFileName}
+                    className="btn-primary flex items-center gap-2 whitespace-nowrap"
+                  >
+                    <Download size={16} />
+                    下载成品
+                  </a>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                <div className="rounded-2xl border border-slate-700/60 bg-slate-900/60 p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-medium text-slate-200">转换前</p>
+                    <span className="text-xs text-slate-500">原始上传</span>
+                  </div>
+                  <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-950/60">
+                    <img
+                      src={results.originalImageUrl || uploadedImage}
+                      alt="Original"
+                      className="w-full max-h-[520px] object-contain"
+                    />
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-medium text-amber-200">转换后</p>
+                    <span className="text-xs text-amber-300/80">
+                      {imageStyles.find(s => s.id === results.style)?.name || results.style}
+                    </span>
+                  </div>
+                  <div className="overflow-hidden rounded-xl border border-amber-500/30 bg-slate-950/60">
+                    <img
+                      src={results.resultImageUrl}
+                      alt="Styled"
+                      className="w-full max-h-[520px] object-contain"
+                    />
+                  </div>
+                  <div className="flex justify-end">
+                    {results.downloadUrl && (
                       <a
-                        href={results.data}
-                        download
-                        target="_blank"
-                        className="absolute bottom-4 right-4 px-4 py-2 rounded-lg bg-slate-900/80 text-white flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity"
+                        href={results.downloadUrl}
+                        download={results.downloadFileName}
+                        className="inline-flex items-center gap-2 rounded-lg border border-amber-400/30 bg-slate-950/70 px-4 py-2 text-sm text-white hover:bg-slate-900 transition-colors"
                       >
                         <Download size={16} />
-                        下载
+                        下载图片
                       </a>
-                    </div>
-                  ) : (
-                    <div className="aspect-square bg-slate-800 rounded-xl flex items-center justify-center">
-                      <div className="text-center p-4">
-                        <Palette size={48} className="mx-auto text-amber-500/50 mb-2" />
-                        <p className="text-slate-400">风格转换结果</p>
-                        <p className="text-slate-500 text-sm mt-1">(模拟结果)</p>
-                      </div>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -592,7 +657,16 @@ export default function VariantGenerator() {
             <div className="space-y-4">
               <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30">
                 <p className="text-emerald-400 font-medium">✓ 实验流程完成</p>
+                <p className="text-slate-400 text-sm mt-1">实验名称: {results.experimentName}</p>
                 <p className="text-slate-400 text-sm mt-1">实验ID: {results.experimentId}</p>
+                <div className="flex flex-wrap gap-2 mt-4">
+                  <button onClick={() => navigate(`/experiments/${results.experimentId}`)} className="btn-secondary flex items-center gap-2">
+                    <ArrowRight size={16} /> 查看实验详情
+                  </button>
+                  <button onClick={() => navigate(`/analysis/${results.experimentId}`)} className="btn-primary flex items-center gap-2">
+                    <BarChart3 size={16} /> 查看分析报告
+                  </button>
+                </div>
               </div>
 
               {results.variants && (
@@ -640,6 +714,13 @@ export default function VariantGenerator() {
                   </p>
                 </div>
               )}
+
+              {results.analysisSummary && (
+                <div className="p-4 rounded-xl bg-slate-800/50 border border-slate-700/50">
+                  <p className="text-white font-medium mb-2">AI 分析摘要</p>
+                  <p className="text-slate-300 text-sm whitespace-pre-wrap">{results.analysisSummary}</p>
+                </div>
+              )}
             </div>
           )}
 
@@ -678,7 +759,7 @@ export default function VariantGenerator() {
           <li>• <strong className="text-slate-300">文生图</strong>：描述商品特征和场景，从零开始生成多种风格的图片</li>
           <li>• <strong className="text-emerald-400">图生图</strong>：上传原始图片，输入修改需求，AI 会基于原图生成多个变体</li>
           <li>• <strong className="text-amber-400">风格转换</strong>：上传图片并选择目标风格，一键将图片转换为卡通、油画、素描等风格</li>
-          <li>• <strong className="text-slate-300">完整流程</strong>：一键完成变体生成、实验创建、数据模拟和分析，快速验证想法</li>
+          <li>• <strong className="text-slate-300">完整流程</strong>：一键完成变体生成、实验创建、真实事件数据生成和分析，快速验证想法</li>
         </ul>
       </div>
     </div>
