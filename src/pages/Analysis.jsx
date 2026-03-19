@@ -14,7 +14,8 @@ import {
   Rocket,
   Clock,
   Sparkles,
-  Zap
+  Zap,
+  Layers
 } from 'lucide-react'
 import { 
   BarChart, 
@@ -38,6 +39,35 @@ import { buildTimelineChartData } from '../utils/analysisTransformers'
 
 const COLORS = ['#0ea5e9', '#8b5cf6', '#ec4899', '#10b981', '#f97316']
 
+const conclusionStatusLabelMap = {
+  NOT_READY: '未就绪',
+  RUNNING: '运行中',
+  READY_FOR_REVIEW: '待审核',
+  GRADUATED: '已毕业',
+  REJECTED: '已拒绝'
+}
+
+const conclusionStatusClassMap = {
+  NOT_READY: 'bg-slate-500/15 text-slate-200 border-slate-500/20',
+  RUNNING: 'bg-blue-500/15 text-blue-200 border-blue-400/20',
+  READY_FOR_REVIEW: 'bg-amber-500/15 text-amber-200 border-amber-400/20',
+  GRADUATED: 'bg-emerald-500/15 text-emerald-200 border-emerald-400/20',
+  REJECTED: 'bg-rose-500/15 text-rose-200 border-rose-400/20'
+}
+
+const getConclusionStatusLabel = (status) => conclusionStatusLabelMap[status] || status || '-'
+const getConclusionStatusClass = (status) => conclusionStatusClassMap[status] || conclusionStatusClassMap.NOT_READY
+
+const formatConfigValue = (value) => {
+  if (value === null || value === undefined || value === '') {
+    return '-'
+  }
+  if (typeof value === 'object') {
+    return JSON.stringify(value)
+  }
+  return String(value)
+}
+
 export default function Analysis() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -50,9 +80,12 @@ export default function Analysis() {
   const [graduation, setGraduation] = useState(null)
   const [prediction, setPrediction] = useState(null)
   const [timeline, setTimeline] = useState(null)
+  const [snapshots, setSnapshots] = useState([])
   const [loading, setLoading] = useState(true)
   const [aiLoading, setAiLoading] = useState(false)
+  const [snapshotLoading, setSnapshotLoading] = useState(false)
   const [aiError, setAiError] = useState('')
+  const [snapshotError, setSnapshotError] = useState('')
   const [activeTab, setActiveTab] = useState('overview')
 
   const goToAIInsights = () => {
@@ -69,13 +102,15 @@ export default function Analysis() {
   const loadData = async () => {
     try {
       setLoading(true)
+      setSnapshotError('')
       
       // 使用 Promise.allSettled 避免单个请求失败导致全部失败
-      const [expRes, statsRes, bayesRes, timelineRes] = await Promise.allSettled([
+      const [expRes, statsRes, bayesRes, timelineRes, snapshotsRes] = await Promise.allSettled([
         experimentAPI.get(id),
         analysisAPI.getStatistics(id),
         analysisAPI.getBayesianAnalysis(id),
-        analysisAPI.getTimeline(id, 'CONVERSION_RATE', 'DAY')
+        analysisAPI.getTimeline(id, 'CONVERSION_RATE', 'DAY'),
+        analysisAPI.listReportSnapshots(id)
       ])
       
       // 处理实验基础信息
@@ -121,6 +156,13 @@ export default function Analysis() {
       } else {
         console.log('Timeline not available:', timelineRes.reason?.message)
         setTimeline(null)
+      }
+
+      if (snapshotsRes.status === 'fulfilled') {
+        setSnapshots(snapshotsRes.value?.data || snapshotsRes.value || [])
+      } else {
+        setSnapshots([])
+        setSnapshotError(snapshotsRes.reason?.response?.data?.message || snapshotsRes.reason?.message || '报告快照暂不可用')
       }
       
     } catch (error) {
@@ -187,6 +229,28 @@ export default function Analysis() {
     }
   }
 
+  const createReportSnapshot = async () => {
+    try {
+      setSnapshotLoading(true)
+      await analysisAPI.createReportSnapshot(id, 'frontend')
+      await loadData()
+    } catch (error) {
+      alert('生成快照失败: ' + (error.response?.data?.message || error.message))
+    } finally {
+      setSnapshotLoading(false)
+    }
+  }
+
+  const downloadSnapshot = (snapshot) => {
+    const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `experiment-snapshot-${id}-v${snapshot.snapshotVersion || snapshot.id || 'latest'}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   if (loading) {
     return (
       <div className="space-y-6">
@@ -237,13 +301,17 @@ export default function Analysis() {
             <ArrowLeft size={20} />
           </button>
           <div>
-            <h1 className="text-2xl font-display font-bold gradient-text">数据分析</h1>
-            <p className="text-slate-400 text-sm mt-1">{experiment?.name || id}</p>
+            <div className="eyebrow mb-3">Analysis</div>
+            <h1 className="page-title">数据分析</h1>
+            <p className="page-subtitle mt-2">{experiment?.name || id}</p>
           </div>
         </div>
         <div className="flex gap-2">
           <button onClick={loadData} className="btn-secondary flex items-center gap-2">
             <RefreshCw size={16} /> 刷新
+          </button>
+          <button onClick={createReportSnapshot} disabled={snapshotLoading} className="btn-secondary flex items-center gap-2 disabled:opacity-60">
+            <Layers size={16} /> {snapshotLoading ? '生成快照中...' : '生成快照'}
           </button>
           <button onClick={exportReport} className="btn-primary flex items-center gap-2">
             <Download size={16} /> 导出报告
@@ -258,9 +326,10 @@ export default function Analysis() {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-2 border-b border-slate-700/50 pb-2 overflow-x-auto">
+      <div className="flex gap-2 border-b border-white/10 pb-2 overflow-x-auto">
         {[
           { key: 'overview', label: '总览', icon: BarChart3 },
+          { key: 'snapshots', label: '报告快照', icon: Layers },
           { key: 'ai-insights', label: 'AI智能分析', icon: Brain },
           { key: 'bayesian', label: '贝叶斯分析', icon: TrendingUp },
           { key: 'significance', label: '显著性检验', icon: Target },
@@ -274,10 +343,10 @@ export default function Analysis() {
                 loadAIInsights()
               }
             }}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2 whitespace-nowrap ${
+            className={`px-4 py-2 rounded-xl text-sm font-medium transition-all flex items-center gap-2 whitespace-nowrap border ${
               activeTab === tab.key
-                ? 'bg-pisces-600/30 text-pisces-400'
-                : 'text-slate-400 hover:text-white hover:bg-slate-700/50'
+                ? 'bg-blue-500/12 text-blue-200 border-blue-400/20'
+                : 'text-slate-400 border-transparent hover:text-white hover:bg-white/5 hover:border-white/5'
             }`}
           >
             <tab.icon size={16} />
@@ -291,7 +360,19 @@ export default function Analysis() {
         <div className="space-y-6">
           {/* Summary Cards */}
           {statistics?.summary && (
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4">
+              <div className="glass-card p-4">
+                <p className="text-slate-400 text-sm">总分流数</p>
+                <p className="text-2xl font-bold text-white">
+                  {statistics.summary.totalAssignments?.toLocaleString() || 0}
+                </p>
+              </div>
+              <div className="glass-card p-4">
+                <p className="text-slate-400 text-sm">总曝光数</p>
+                <p className="text-2xl font-bold text-white">
+                  {statistics.summary.totalExposures?.toLocaleString() || 0}
+                </p>
+              </div>
               <div className="glass-card p-4">
                 <p className="text-slate-400 text-sm">总访客数</p>
                 <p className="text-2xl font-bold text-white">
@@ -311,10 +392,110 @@ export default function Analysis() {
                 </p>
               </div>
               <div className="glass-card p-4">
-                <p className="text-slate-400 text-sm">最佳表现组</p>
-                <p className="text-2xl font-bold text-accent-purple">
-                  {statistics.summary.bestPerformingGroup || '-'}
+                <p className="text-slate-400 text-sm">数据门禁</p>
+                <p className={`text-2xl font-bold ${statistics.dataQualityCheck?.analysisReady ? 'text-emerald-400' : 'text-amber-400'}`}>
+                  {statistics.dataQualityCheck?.analysisReady ? '通过' : '阻断'}
                 </p>
+              </div>
+            </div>
+          )}
+
+          {statistics?.dataQualityCheck && (
+            <div className="glass-card p-6">
+              <div className="flex items-center justify-between gap-3 mb-4">
+                <h3 className="text-lg font-semibold text-white">数据质量门禁</h3>
+                <span className={`badge border ${statistics.dataQualityCheck.analysisReady ? 'bg-emerald-500/15 text-emerald-200 border-emerald-400/20' : 'bg-amber-500/15 text-amber-200 border-amber-400/20'}`}>
+                  {statistics.dataQualityCheck.analysisReady ? '可用于决策' : '需要先修复'}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
+                <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
+                  <p className="text-slate-500 mb-1">SRM</p>
+                  <p className="text-white font-medium">{statistics.dataQualityCheck.hasSrm ? '存在异常' : '正常'}</p>
+                  <p className="text-slate-400 text-xs mt-1">
+                    {statistics.dataQualityCheck.srmPValue !== undefined && statistics.dataQualityCheck.srmPValue !== null
+                      ? `p = ${statistics.dataQualityCheck.srmPValue.toFixed(4)}`
+                      : '暂无 p 值'}
+                  </p>
+                </div>
+                <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
+                  <p className="text-slate-500 mb-1">建议样本量</p>
+                  <p className="text-white font-medium">
+                    {statistics.dataQualityCheck.requiredSampleSizePerGroup?.toLocaleString() || '-'}
+                  </p>
+                  <p className="text-slate-400 text-xs mt-1">
+                    {statistics.dataQualityCheck.sampleSizeReached ? '已达到建议阈值' : '尚未达到建议阈值'}
+                  </p>
+                </div>
+                <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
+                  <p className="text-slate-500 mb-1">阻断问题</p>
+                  <p className="text-white font-medium">
+                    {statistics.dataQualityCheck.blockingIssues?.length || 0} 项
+                  </p>
+                  <p className="text-slate-400 text-xs mt-1">需先处理后再决策</p>
+                </div>
+                <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
+                  <p className="text-slate-500 mb-1">护栏异常</p>
+                  <p className="text-white font-medium">
+                    {statistics.summary.breachedGuardrails?.length || 0} 项
+                  </p>
+                  <p className="text-slate-400 text-xs mt-1">直接影响毕业判断</p>
+                </div>
+              </div>
+              {(statistics.dataQualityCheck.blockingIssues?.length > 0 || statistics.dataQualityCheck.warnings?.length > 0) && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                  {statistics.dataQualityCheck.blockingIssues?.length > 0 && (
+                    <div className="rounded-xl bg-rose-500/10 border border-rose-500/20 p-4">
+                      <p className="text-rose-200 font-medium mb-2">阻断问题</p>
+                      <ul className="space-y-1 text-sm text-rose-100/90">
+                        {statistics.dataQualityCheck.blockingIssues.map((issue, index) => (
+                          <li key={index}>• {issue}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {statistics.dataQualityCheck.warnings?.length > 0 && (
+                    <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 p-4">
+                      <p className="text-amber-200 font-medium mb-2">提示信息</p>
+                      <ul className="space-y-1 text-sm text-amber-100/90">
+                        {statistics.dataQualityCheck.warnings.map((warning, index) => (
+                          <li key={index}>• {warning}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {experiment?.groups && Object.keys(experiment.groups).length > 0 && (
+            <div className="glass-card p-6">
+              <div className="flex items-center justify-between gap-3 mb-4">
+                <h3 className="text-lg font-semibold text-white">实验组参数概览</h3>
+                <p className="text-slate-400 text-sm">只读展示，便于核对创建时的变体配置</p>
+              </div>
+              <div className="space-y-4">
+                {Object.entries(experiment.groups).map(([groupId, group]) => (
+                  <div key={groupId} className="rounded-xl border border-white/5 bg-slate-800/40 p-4">
+                    <div className="flex items-center justify-between gap-3 text-sm mb-3">
+                      <span className="text-white font-medium">{group.name || groupId}</span>
+                      <span className="text-slate-400">{((group.trafficRatio || 0) * 100).toFixed(0)}%</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-xs">
+                      {group.config && Object.keys(group.config).length > 0 ? (
+                        Object.entries(group.config).map(([key, value]) => (
+                          <div key={key} className="rounded-lg bg-slate-950/40 border border-white/5 px-3 py-2">
+                            <p className="text-slate-500 mb-1">{key}</p>
+                            <p className="text-slate-100 break-words">{formatConfigValue(value)}</p>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="text-slate-500 text-sm">暂无变体参数</div>
+                      )}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           )}
@@ -426,6 +607,115 @@ export default function Analysis() {
                   </tbody>
                 </table>
               </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Snapshots Tab */}
+      {activeTab === 'snapshots' && (
+        <div className="space-y-6">
+          <div className="glass-card p-6">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-white">报告快照</h3>
+                <p className="text-slate-400 text-sm mt-1">
+                  快照记录每次分析结论，便于回溯、对比和归档。
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={loadData} className="btn-secondary flex items-center gap-2">
+                  <RefreshCw size={16} /> 刷新
+                </button>
+                <button onClick={createReportSnapshot} disabled={snapshotLoading} className="btn-primary flex items-center gap-2 disabled:opacity-60">
+                  <Layers size={16} /> {snapshotLoading ? '生成中...' : '生成快照'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {snapshotError && (
+            <div className="glass-card p-4 border border-amber-500/20 bg-amber-500/10">
+              <p className="text-amber-200 text-sm">{snapshotError}</p>
+            </div>
+          )}
+
+          {snapshots.length === 0 ? (
+            <div className="glass-card p-8 text-center">
+              <Layers size={44} className="mx-auto text-slate-600 mb-4" />
+              <p className="text-white font-medium mb-2">暂无报告快照</p>
+              <p className="text-slate-400 text-sm mb-4">点击“生成快照”即可将当前分析结果归档。</p>
+              <button onClick={createReportSnapshot} disabled={snapshotLoading} className="btn-primary inline-flex items-center gap-2 disabled:opacity-60">
+                <Layers size={16} /> 生成第一个快照
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              {snapshots.map(snapshot => (
+                <div key={snapshot.id} className="glass-card p-6">
+                  <div className="flex items-start justify-between gap-4 mb-4">
+                    <div>
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="badge badge-draft">v{snapshot.snapshotVersion || '-'}</span>
+                        <span className={`badge border ${getConclusionStatusClass(snapshot.conclusionStatus)}`}>
+                          {getConclusionStatusLabel(snapshot.conclusionStatus)}
+                        </span>
+                      </div>
+                      <h3 className="text-lg font-semibold text-white">
+                        {snapshot.bestPerformingGroup || snapshot.winningVariant || '实验快照'}
+                      </h3>
+                      <p className="text-slate-400 text-sm mt-1">
+                        {snapshot.generatedAt ? new Date(snapshot.generatedAt).toLocaleString() : '-'} · {snapshot.generatedBy || 'system'}
+                      </p>
+                    </div>
+                    <button onClick={() => downloadSnapshot(snapshot)} className="btn-secondary text-sm">
+                      <Download size={16} /> 下载
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                    <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
+                      <p className="text-slate-500 mb-1">主指标</p>
+                      <p className="text-white font-medium">{snapshot.primaryMetricKey || '-'}</p>
+                    </div>
+                    <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
+                      <p className="text-slate-500 mb-1">最佳实验组</p>
+                      <p className="text-white font-medium">{snapshot.bestPerformingGroup || '-'}</p>
+                    </div>
+                    <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
+                      <p className="text-slate-500 mb-1">胜出变体</p>
+                      <p className="text-white font-medium">{snapshot.winningVariant || '-'}</p>
+                    </div>
+                    <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
+                      <p className="text-slate-500 mb-1">分析门禁</p>
+                      <p className={`font-medium ${snapshot.analysisReady ? 'text-emerald-400' : 'text-amber-400'}`}>
+                        {snapshot.analysisReady ? '通过' : '阻断'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {(snapshot.decisionContext || snapshot.breachedGuardrails?.length) && (
+                    <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+                      <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
+                        <p className="text-slate-500 mb-1">SRM</p>
+                        <p className="text-white font-medium">
+                          {snapshot.decisionContext?.dataQualityCheck?.hasSrm ? '存在异常' : '正常'}
+                        </p>
+                      </div>
+                      <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
+                        <p className="text-slate-500 mb-1">护栏异常</p>
+                        <p className="text-white font-medium">{snapshot.breachedGuardrails?.length || 0} 项</p>
+                      </div>
+                      <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
+                        <p className="text-slate-500 mb-1">结论上下文</p>
+                        <p className="text-white font-medium">
+                          {snapshot.decisionContext?.analysisReady === false ? '阻断' : '已归档'}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           )}
         </div>

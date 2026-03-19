@@ -39,6 +39,26 @@ const ExperimentRow = ({ experiment, index }) => {
     PAUSED: { badge: 'badge-paused', icon: Pause, text: '已暂停' },
     STOPPED: { badge: 'badge-stopped', icon: CheckCircle, text: '已停止' }
   }
+  const conclusionLabelMap = {
+    NOT_READY: '未就绪',
+    RUNNING: '运行中',
+    READY_FOR_REVIEW: '待审核',
+    GRADUATED: '已毕业',
+    REJECTED: '已拒绝'
+  }
+  const summarizeGroupConfig = (config) => {
+    if (!config || typeof config !== 'object') {
+      return '暂无参数'
+    }
+    const entries = Object.entries(config)
+    if (entries.length === 0) {
+      return '暂无参数'
+    }
+    return entries
+      .slice(0, 2)
+      .map(([key, value]) => `${key}: ${typeof value === 'object' ? JSON.stringify(value) : value}`)
+      .join(' · ')
+  }
 
   const status = statusConfig[experiment.status] || statusConfig.DRAFT
 
@@ -57,6 +77,16 @@ const ExperimentRow = ({ experiment, index }) => {
             {experiment.name}
           </p>
           <p className="text-sm text-slate-500">{experiment.id}</p>
+          <p className="mt-1 text-xs text-slate-400">
+            结论状态：{conclusionLabelMap[experiment.conclusionStatus] || experiment.conclusionStatus || '未就绪'}
+          </p>
+          {experiment.groups && Object.keys(experiment.groups).length > 0 && (
+            <p className="mt-1 text-xs text-slate-500">
+              参数摘要：{Object.entries(experiment.groups)
+                .map(([groupId, group]) => `${group.name || groupId}(${summarizeGroupConfig(group.config)})`)
+                .join('； ')}
+            </p>
+          )}
         </div>
       </div>
       <div className="flex items-center gap-4">
@@ -119,8 +149,9 @@ export default function Dashboard() {
     <div className="space-y-8">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-display font-bold gradient-text">仪表盘</h1>
-          <p className="text-slate-400 mt-1">欢迎回来，查看您的实验概览</p>
+          <div className="eyebrow mb-3">Overview</div>
+          <h1 className="page-title">仪表盘</h1>
+          <p className="page-subtitle mt-2">查看实验运行概览、流量分布和真实转化表现</p>
         </div>
         <Link to="/experiments/create" className="btn-primary flex items-center gap-2">
           <Sparkles size={18} />

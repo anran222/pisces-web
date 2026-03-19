@@ -26,6 +26,30 @@ const statusConfig = {
   STOPPED: { badge: 'badge-stopped', text: '已停止', color: 'text-red-400' },
 }
 
+const conclusionLabelMap = {
+  NOT_READY: '未就绪',
+  RUNNING: '运行中',
+  READY_FOR_REVIEW: '待审核',
+  GRADUATED: '已毕业',
+  REJECTED: '已拒绝'
+}
+
+const getConclusionLabel = (status) => conclusionLabelMap[status] || status || '-'
+
+const summarizeGroupConfig = (config) => {
+  if (!config || typeof config !== 'object') {
+    return '暂无参数'
+  }
+  const entries = Object.entries(config)
+  if (entries.length === 0) {
+    return '暂无参数'
+  }
+  return entries
+    .slice(0, 3)
+    .map(([key, value]) => `${key}: ${typeof value === 'object' ? JSON.stringify(value) : value}`)
+    .join(' · ')
+}
+
 export default function ExperimentList() {
   const [experiments, setExperiments] = useState([])
   const [loading, setLoading] = useState(true)
@@ -210,8 +234,9 @@ export default function ExperimentList() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-display font-bold gradient-text">实验管理</h1>
-          <p className="text-slate-400 mt-1">管理所有A/B测试实验</p>
+          <div className="eyebrow mb-3">Management</div>
+          <h1 className="page-title">实验管理</h1>
+          <p className="page-subtitle mt-2">集中查看实验状态、分组配置和运行结果</p>
         </div>
         <Link to="/experiments/create" className="btn-primary flex items-center gap-2">
           <Plus size={18} />
@@ -390,6 +415,23 @@ export default function ExperimentList() {
                         <div>
                           <p className="font-medium text-white">{experiment.name}</p>
                           <p className="text-sm text-slate-500 font-mono">{experiment.id}</p>
+                          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                            <span className="px-2 py-1 rounded-full bg-white/5 border border-white/5 text-slate-300">
+                              结论状态: {getConclusionLabel(experiment.conclusionStatus)}
+                            </span>
+                            {experiment.suggestedConclusionStatus && (
+                              <span className="px-2 py-1 rounded-full bg-blue-500/10 border border-blue-400/20 text-blue-200">
+                                建议: {getConclusionLabel(experiment.suggestedConclusionStatus)}
+                              </span>
+                            )}
+                          </div>
+                          {experiment.groups && Object.keys(experiment.groups).length > 0 && (
+                            <div className="mt-2 text-xs text-slate-400">
+                              参数摘要：{Object.entries(experiment.groups)
+                                .map(([groupId, group]) => `${group.name || groupId}(${summarizeGroupConfig(group.config)})`)
+                                .join('； ')}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </td>

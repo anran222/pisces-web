@@ -198,8 +198,9 @@ export default function VariantGenerator() {
     <div className="space-y-6">
       {/* Header */}
       <div>
-        <h1 className="text-3xl font-display font-bold gradient-text">AI 变体生成</h1>
-        <p className="text-slate-400 mt-1">使用 AI 智能生成高质量实验变体</p>
+        <div className="eyebrow mb-3">Generator</div>
+        <h1 className="page-title">AI 变体生成</h1>
+        <p className="page-subtitle mt-2">围绕业务文案、图片和实验流程生成候选变体</p>
       </div>
 
       {/* Mode Selection */}

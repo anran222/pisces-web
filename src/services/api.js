@@ -38,6 +38,10 @@ export const experimentAPI = {
   
   // 更新实验
   update: (id, data) => api.put(`/experiments/${id}`, data),
+
+  // 更新实验结论状态
+  updateConclusionStatus: (id, conclusionStatus, operator = 'web-ui') =>
+    api.post(`/experiments/${id}/conclusion-status`, { conclusionStatus, operator }),
   
   // 删除实验
   delete: (id) => api.delete(`/experiments/${id}`),
@@ -157,6 +161,16 @@ export const analysisAPI = {
   // 导出实验报告
   exportReport: (experimentId) => 
     api.get(`/analysis/experiment/${experimentId}/report`),
+
+  // 生成实验报告快照
+  createReportSnapshot: (experimentId, generatedBy = 'web-ui') =>
+    api.post(`/analysis/experiment/${experimentId}/report/snapshots`, null, {
+      params: { generatedBy }
+    }),
+
+  // 查询实验报告快照列表
+  listReportSnapshots: (experimentId) =>
+    api.get(`/analysis/experiment/${experimentId}/report/snapshots`),
   
   // 获取时间线
   getTimeline: (experimentId, metricType = 'CONVERSION_RATE', granularity = 'DAY') =>

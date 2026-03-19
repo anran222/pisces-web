@@ -22,6 +22,52 @@ const statusConfig = {
   STOPPED: { badge: 'badge-stopped', text: '已停止' }
 }
 
+const conclusionStatusConfig = {
+  NOT_READY: {
+    label: '未就绪',
+    className: 'bg-slate-500/15 text-slate-200 border-slate-500/20',
+  },
+  RUNNING: {
+    label: '运行中',
+    className: 'bg-blue-500/15 text-blue-200 border-blue-400/20',
+  },
+  READY_FOR_REVIEW: {
+    label: '待审核',
+    className: 'bg-amber-500/15 text-amber-200 border-amber-400/20',
+  },
+  GRADUATED: {
+    label: '已毕业',
+    className: 'bg-emerald-500/15 text-emerald-200 border-emerald-400/20',
+  },
+  REJECTED: {
+    label: '已拒绝',
+    className: 'bg-rose-500/15 text-rose-200 border-rose-400/20',
+  },
+}
+
+const getAllowedConclusionStatuses = (status) => {
+  switch (status) {
+    case 'NOT_READY':
+      return ['RUNNING']
+    case 'RUNNING':
+      return ['READY_FOR_REVIEW']
+    case 'READY_FOR_REVIEW':
+      return ['GRADUATED', 'REJECTED']
+    default:
+      return []
+  }
+}
+
+const formatConfigValue = (value) => {
+  if (value === null || value === undefined || value === '') {
+    return '-'
+  }
+  if (typeof value === 'object') {
+    return JSON.stringify(value)
+  }
+  return String(value)
+}
+
 export default function ExperimentDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -30,6 +76,8 @@ export default function ExperimentDetail() {
   const [mabSummary, setMabSummary] = useState(null)
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState(false)
+  const [conclusionStatusDraft, setConclusionStatusDraft] = useState('')
+  const [conclusionSaving, setConclusionSaving] = useState(false)
   const [statsError, setStatsError] = useState('')
 
   useEffect(() => {
@@ -47,7 +95,10 @@ export default function ExperimentDetail() {
       ])
 
       if (expRes.status === 'fulfilled') {
-        setExperiment(expRes.value.data || expRes.value)
+        const expData = expRes.value.data || expRes.value
+        setExperiment(expData)
+        const candidateStatuses = getAllowedConclusionStatuses(expData?.conclusionStatus)
+        setConclusionStatusDraft(candidateStatuses[0] || '')
       } else {
         throw expRes.reason
       }
@@ -114,6 +165,22 @@ export default function ExperimentDetail() {
     }
   }
 
+  const handleConclusionStatusUpdate = async () => {
+    if (!conclusionStatusDraft) {
+      return
+    }
+
+    try {
+      setConclusionSaving(true)
+      await experimentAPI.updateConclusionStatus(id, conclusionStatusDraft, 'frontend')
+      await loadData()
+    } catch (error) {
+      alert('更新结论状态失败: ' + (error.response?.data?.message || error.message))
+    } finally {
+      setConclusionSaving(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="space-y-6">
@@ -135,6 +202,9 @@ export default function ExperimentDetail() {
   }
 
   const status = statusConfig[experiment.status] || statusConfig.DRAFT
+  const currentConclusionStatus = experiment.conclusionStatus || 'NOT_READY'
+  const suggestedConclusionStatus = experiment.suggestedConclusionStatus || '-'
+  const allowedConclusionStatuses = getAllowedConclusionStatuses(currentConclusionStatus)
 
   return (
     <div className="space-y-6">
@@ -147,10 +217,10 @@ export default function ExperimentDetail() {
         </button>
         <div className="flex-1">
           <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-display font-bold text-white">{experiment.name}</h1>
+            <h1 className="page-title">{experiment.name}</h1>
             <span className={`badge ${status.badge}`}>{status.text}</span>
           </div>
-          <p className="text-slate-400 text-sm font-mono mt-1">{experiment.id}</p>
+          <p className="page-subtitle font-mono mt-2">{experiment.id}</p>
         </div>
         <div className="flex flex-wrap justify-end gap-2">
           {experiment.status === 'DRAFT' && (
@@ -218,11 +288,25 @@ export default function ExperimentDetail() {
             </div>
             <span className="text-slate-400">实验组</span>
           </div>
-          <div className="space-y-2">
+          <div className="space-y-3">
             {experiment.groups && Object.entries(experiment.groups).map(([groupId, group]) => (
-              <div key={groupId} className="flex items-center justify-between text-sm">
-                <span className="text-white">{group.name || groupId}</span>
-                <span className="text-slate-400">{((group.trafficRatio || 0) * 100).toFixed(0)}%</span>
+              <div key={groupId} className="rounded-xl border border-white/5 bg-slate-800/40 p-4">
+                <div className="flex items-center justify-between gap-3 text-sm">
+                  <span className="text-white font-medium">{group.name || groupId}</span>
+                  <span className="text-slate-400">{((group.trafficRatio || 0) * 100).toFixed(0)}%</span>
+                </div>
+                <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                  {group.config && Object.keys(group.config).length > 0 ? (
+                    Object.entries(group.config).map(([key, value]) => (
+                      <div key={key} className="rounded-lg bg-slate-950/40 border border-white/5 px-3 py-2">
+                        <p className="text-slate-500 mb-1">{key}</p>
+                        <p className="text-slate-100 break-words">{formatConfigValue(value)}</p>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-slate-500 text-sm">暂无变体参数</div>
+                  )}
+                </div>
               </div>
             ))}
           </div>
@@ -244,6 +328,72 @@ export default function ExperimentDetail() {
               <span className="text-slate-500">总流量</span>
               <span className="text-white">{((experiment.traffic?.totalTraffic || 1) * 100).toFixed(0)}%</span>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="glass-card p-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="space-y-3">
+            <div className="flex items-center gap-3">
+              <h2 className="text-lg font-semibold text-white">结论状态</h2>
+              <span className={`badge border ${conclusionStatusConfig[currentConclusionStatus]?.className || conclusionStatusConfig.NOT_READY.className}`}>
+                {conclusionStatusConfig[currentConclusionStatus]?.label || currentConclusionStatus}
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+              <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
+                <p className="text-slate-500 mb-1">当前人工状态</p>
+                <p className="text-white font-medium">
+                  {conclusionStatusConfig[currentConclusionStatus]?.label || currentConclusionStatus}
+                </p>
+                <p className="text-slate-400 text-xs mt-1">
+                  {experiment.conclusionUpdatedAt ? new Date(experiment.conclusionUpdatedAt).toLocaleString() : '暂无更新时间'}
+                </p>
+              </div>
+              <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
+                <p className="text-slate-500 mb-1">系统建议状态</p>
+                <p className="text-white font-medium">
+                  {suggestedConclusionStatus !== '-' 
+                    ? (conclusionStatusConfig[suggestedConclusionStatus]?.label || suggestedConclusionStatus)
+                    : '-'}
+                </p>
+                <p className="text-slate-400 text-xs mt-1">
+                  {experiment.suggestedConclusionUpdatedAt ? new Date(experiment.suggestedConclusionUpdatedAt).toLocaleString() : '暂无建议更新时间'}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="min-w-[280px] w-full lg:w-80">
+            <label className="block text-sm text-slate-400 mb-2">更新人工结论状态</label>
+            <select
+              className="input mb-3"
+              value={conclusionStatusDraft}
+              onChange={(e) => setConclusionStatusDraft(e.target.value)}
+              disabled={allowedConclusionStatuses.length === 0}
+            >
+              {allowedConclusionStatuses.length === 0 ? (
+                <option value="">当前状态不可继续迁移</option>
+              ) : (
+                allowedConclusionStatuses.map(statusKey => (
+                  <option key={statusKey} value={statusKey}>
+                    {conclusionStatusConfig[statusKey]?.label || statusKey}
+                  </option>
+                ))
+              )}
+            </select>
+            <button
+              type="button"
+              disabled={conclusionSaving || !conclusionStatusDraft}
+              onClick={handleConclusionStatusUpdate}
+              className="btn-primary w-full disabled:opacity-60"
+            >
+              {conclusionSaving ? '保存中...' : '保存结论状态'}
+            </button>
+            <p className="text-xs text-slate-500 mt-2 leading-5">
+              仅允许按状态机流转，不会自动回写为快照结论。
+            </p>
           </div>
         </div>
       </div>
