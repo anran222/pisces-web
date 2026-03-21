@@ -60,6 +60,9 @@ export const experimentAPI = {
 
   // 为已有实验生成真实事件数据
   simulateData: (id, data) => api.post(`/experiments/generator/${id}/simulate`, data),
+
+  // 快速生成演示实验
+  generateDemoExperiment: () => api.post('/experiments/generator/demo'),
   
   // 批量暂停实验
   batchPause: (ids) => api.post('/experiments/batch/pause', ids),
@@ -196,26 +199,21 @@ export const analysisAPI = {
       params: { treatmentGroupId, controlGroupId }
     }),
   
-  // AI智能实验解读
-  getAIInsights: (experimentId) =>
-    api.get(`/analysis/experiment/${experimentId}/ai-insights`, {
-      // AI分析可能耗时较长，单次请求超时提升到5分钟
+  // AI实验设计建议 v2
+  designExperiment: (payload) =>
+    api.post('/analysis/experiment/ai-design/v2', payload, {
       timeout: 300000
     }),
-  
-  // AI实验设计建议
-  getAIExperimentDesign: (businessScenario, targetMetric, constraints = []) =>
-    api.post('/analysis/experiment/ai-design', { businessScenario, targetMetric, constraints }),
-  
-  // AI自动毕业决策
-  autoGraduateDecision: (experimentId) =>
-    api.get(`/analysis/experiment/${experimentId}/auto-graduate`, {
+
+  // AI实验诊断
+  getAIDiagnosis: (experimentId) =>
+    api.get(`/analysis/experiment/${experimentId}/ai-diagnosis`, {
       timeout: 300000
     }),
-  
-  // AI预测实验完成时间
-  predictCompletion: (experimentId) =>
-    api.get(`/analysis/experiment/${experimentId}/predict-completion`, {
+
+  // AI毕业决策
+  getAIGraduationDecision: (experimentId) =>
+    api.get(`/analysis/experiment/${experimentId}/ai-graduation-decision`, {
       timeout: 300000
     }),
 }
@@ -229,40 +227,11 @@ export const variantAPI = {
   // 生成图像变体
   generateImage: (prompt, count = 5) =>
     api.post('/variants/image/generate', null, { params: { prompt, count } }),
-  
-  // 基于上传图片生成变体（图生图）
-  generateImageFromImage: (imageBase64, prompt, count = 4) =>
-    api.post('/variants/image/generate-from-image', { imageBase64, prompt, count }),
-  
-  // 图片局部编辑
-  editImage: (imageBase64, maskBase64, prompt) =>
-    api.post('/variants/image/edit', { imageBase64, maskBase64, prompt }),
-  
-  // 图片风格转换
-  styleTransfer: (imageBase64, style) =>
-    api.post('/variants/image/style-transfer', { imageBase64, style }),
-  
-  // 获取支持的风格列表
-  getImageStyles: () => api.get('/variants/image/styles'),
-  
-  // 筛选变体
-  filter: (variants, variantType) =>
-    api.post('/variants/filter', variants, { params: { variantType } }),
-  
-  // 评估变体
-  evaluate: (variant, variantType) =>
-    api.post('/variants/evaluate', null, { params: { variant, variantType } }),
-  
-  // 完整文本实验体生成
-  generateCompleteText: (prompt, generateCount = 20, finalCount = 5) =>
-    api.post('/variants/text/demo', null, { 
-      params: { prompt, generateCount, finalCount } 
-    }),
-  
-  // 完整实验流程演示
-  generateCompleteFlow: (prompt, generateCount = 15, finalCount = 4, visitorCount = 150, daysAgo = 7) =>
-    api.post('/variants/experiment/flow', null, {
-      params: { prompt, generateCount, finalCount, visitorCount, daysAgo }
+
+  // 统一生成候选变体
+  generateCandidates: (payload) =>
+    api.post('/variants/generate', payload, {
+      timeout: 300000
     }),
 }
 

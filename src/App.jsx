@@ -12,13 +12,17 @@ function App() {
     <Router>
       <Routes>
         <Route path="/" element={<Layout />}>
-          <Route index element={<Navigate to="/dashboard" replace />} />
-          <Route path="dashboard" element={<Dashboard />} />
+          <Route index element={<Navigate to="/ai-center" replace />} />
+          <Route path="ai-center" element={<Dashboard />} />
+          <Route path="ai-design" element={<CreateExperiment />} />
           <Route path="experiments" element={<ExperimentList />} />
-          <Route path="experiments/create" element={<CreateExperiment />} />
+          <Route path="experiments/create" element={<Navigate to="/ai-design" replace />} />
           <Route path="experiments/:id" element={<ExperimentDetail />} />
-          <Route path="analysis/:id" element={<Analysis />} />
-          <Route path="variants" element={<VariantGenerator />} />
+          <Route path="experiments/:id/decision" element={<Analysis />} />
+          <Route path="analysis/:id" element={<Navigate to="/ai-center" replace />} />
+          <Route path="variants-lab" element={<VariantGenerator />} />
+          <Route path="dashboard" element={<Navigate to="/ai-center" replace />} />
+          <Route path="variants" element={<Navigate to="/variants-lab" replace />} />
         </Route>
       </Routes>
     </Router>

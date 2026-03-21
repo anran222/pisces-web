@@ -1,71 +1,76 @@
-import { useEffect, useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import { 
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
+import {
+  AlertTriangle,
   ArrowLeft,
   BarChart3,
-  TrendingUp,
-  Target,
-  CheckCircle,
-  XCircle,
-  AlertCircle,
+  BrainCircuit,
+  CheckCircle2,
   Download,
-  RefreshCw,
-  Brain,
-  Rocket,
-  Clock,
+  Loader2,
+  ShieldAlert,
   Sparkles,
-  Zap,
-  Layers
+  TrendingUp
 } from 'lucide-react'
-import { 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
-  LineChart,
-  Line,
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
   Legend,
-  AreaChart,
-  Area
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis
 } from 'recharts'
-import { experimentAPI, analysisAPI } from '../services/api'
+import { analysisAPI, experimentAPI } from '../services/api'
 import { buildTimelineChartData } from '../utils/analysisTransformers'
+import { buildDecisionWorkspaceModel } from '../utils/aiDecisionTransformers'
+import { resolvePrimaryMetricDefinition } from '../utils/experimentDetailUtils'
 
-const COLORS = ['#0ea5e9', '#8b5cf6', '#ec4899', '#10b981', '#f97316']
+const CHART_COLORS = ['#ff8b5d', '#4cc9f0', '#a78bfa', '#34d399', '#facc15']
 
-const conclusionStatusLabelMap = {
-  NOT_READY: '未就绪',
-  RUNNING: '运行中',
-  READY_FOR_REVIEW: '待审核',
-  GRADUATED: '已毕业',
-  REJECTED: '已拒绝'
+const getDecisionClassName = (decision) => {
+  if (decision === 'GRADUATE') {
+    return 'border-[#cde5d7] bg-[#f6fbf8] text-[#1e7e57]'
+  }
+  if (decision === 'ROLLBACK') {
+    return 'border-[#e7c8c4] bg-[#fff7f5] text-[#b44f42]'
+  }
+  return 'border-[#ecd8bf] bg-[#fff8ef] text-[#9a6026]'
 }
 
-const conclusionStatusClassMap = {
-  NOT_READY: 'bg-slate-500/15 text-slate-200 border-slate-500/20',
-  RUNNING: 'bg-blue-500/15 text-blue-200 border-blue-400/20',
-  READY_FOR_REVIEW: 'bg-amber-500/15 text-amber-200 border-amber-400/20',
-  GRADUATED: 'bg-emerald-500/15 text-emerald-200 border-emerald-400/20',
-  REJECTED: 'bg-rose-500/15 text-rose-200 border-rose-400/20'
+const getGuardrailClassName = (status) => {
+  if (status === 'PASS') {
+    return 'border-[#cde5d7] bg-[#f6fbf8] text-[#1e7e57]'
+  }
+  if (status === 'BLOCKED') {
+    return 'border-[#e7c8c4] bg-[#fff7f5] text-[#b44f42]'
+  }
+  return 'border-blue-200 bg-blue-50 text-[var(--brand)]'
 }
 
-const getConclusionStatusLabel = (status) => conclusionStatusLabelMap[status] || status || '-'
-const getConclusionStatusClass = (status) => conclusionStatusClassMap[status] || conclusionStatusClassMap.NOT_READY
+const formatMetricChartValue = (value, aggregationType) => {
+  const numericValue = Number(value || 0)
+  if (aggregationType === 'RATE') {
+    return Number((numericValue * 100).toFixed(2))
+  }
+  return Number(numericValue.toFixed(2))
+}
 
-const formatConfigValue = (value) => {
-  if (value === null || value === undefined || value === '') {
-    return '-'
-  }
-  if (typeof value === 'object') {
-    return JSON.stringify(value)
-  }
-  return String(value)
+const buildGroupChartData = (statistics, primaryMetricDefinition) => {
+  const primaryMetricKey = primaryMetricDefinition?.key
+  const aggregationType = primaryMetricDefinition?.aggregationType
+
+  return Object.values(statistics?.groupStatistics || {}).map(group => ({
+    group: group.groupName || group.groupId,
+    primaryMetric: primaryMetricKey
+      ? formatMetricChartValue(group.metricValues?.[primaryMetricKey], aggregationType)
+      : Number(((group.conversionRate || 0) * 100).toFixed(2)),
+    liftRate: Number(((group.liftRate || 0) * 100).toFixed(2)),
+    visitors: group.userCount || 0
+  }))
 }
 
 export default function Analysis() {
@@ -73,27 +78,11 @@ export default function Analysis() {
   const navigate = useNavigate()
   const [experiment, setExperiment] = useState(null)
   const [statistics, setStatistics] = useState(null)
-  const [bayesian, setBayesian] = useState(null)
-  const [significance, setSignificance] = useState(null)
-  const [report, setReport] = useState(null)
-  const [aiInsights, setAiInsights] = useState(null)
+  const [diagnosis, setDiagnosis] = useState(null)
   const [graduation, setGraduation] = useState(null)
-  const [prediction, setPrediction] = useState(null)
   const [timeline, setTimeline] = useState(null)
-  const [snapshots, setSnapshots] = useState([])
   const [loading, setLoading] = useState(true)
-  const [aiLoading, setAiLoading] = useState(false)
-  const [snapshotLoading, setSnapshotLoading] = useState(false)
-  const [aiError, setAiError] = useState('')
-  const [snapshotError, setSnapshotError] = useState('')
-  const [activeTab, setActiveTab] = useState('overview')
-
-  const goToAIInsights = () => {
-    setActiveTab('ai-insights')
-    if (!aiInsights) {
-      loadAIInsights()
-    }
-  }
+  const [exporting, setExporting] = useState(false)
 
   useEffect(() => {
     loadData()
@@ -102,1063 +91,338 @@ export default function Analysis() {
   const loadData = async () => {
     try {
       setLoading(true)
-      setSnapshotError('')
-      
-      // 使用 Promise.allSettled 避免单个请求失败导致全部失败
-      const [expRes, statsRes, bayesRes, timelineRes, snapshotsRes] = await Promise.allSettled([
+      const [experimentRes, statisticsRes, diagnosisRes, graduationRes] = await Promise.allSettled([
         experimentAPI.get(id),
         analysisAPI.getStatistics(id),
-        analysisAPI.getBayesianAnalysis(id),
-        analysisAPI.getTimeline(id, 'CONVERSION_RATE', 'DAY'),
-        analysisAPI.listReportSnapshots(id)
+        analysisAPI.getAIDiagnosis(id),
+        analysisAPI.getAIGraduationDecision(id)
       ])
-      
-      // 处理实验基础信息
-      if (expRes.status === 'fulfilled') {
-        const expData = expRes.value.data || expRes.value
-        setExperiment(expData)
-        
-        // 如果有足够的组，获取显著性检验
-        if (expData?.groups && Object.keys(expData.groups).length >= 2) {
-          const groups = Object.keys(expData.groups)
-          try {
-            const sigRes = await analysisAPI.significanceTest(id, groups[1], groups[0])
-            setSignificance(sigRes.data || sigRes)
-          } catch (e) {
-            console.log('Significance test not available')
-          }
-        }
-      } else {
-        console.error('Failed to load experiment:', expRes.reason)
-        // 设置默认实验数据
-        setExperiment({ id, name: id, groups: {} })
-      }
-      
-      // 处理统计数据
-      if (statsRes.status === 'fulfilled') {
-        setStatistics(statsRes.value?.data || statsRes.value)
-      } else {
-        console.log('Statistics not available:', statsRes.reason?.message)
-        setStatistics(null)
-      }
-      
-      // 处理贝叶斯分析
-      if (bayesRes.status === 'fulfilled') {
-        setBayesian(bayesRes.value?.data || bayesRes.value)
-      } else {
-        console.log('Bayesian analysis not available:', bayesRes.reason?.message)
-        setBayesian(null)
-      }
-      
-      // 处理时间线数据
-      if (timelineRes.status === 'fulfilled') {
-        setTimeline(timelineRes.value?.data || timelineRes.value)
-      } else {
-        console.log('Timeline not available:', timelineRes.reason?.message)
-        setTimeline(null)
-      }
 
-      if (snapshotsRes.status === 'fulfilled') {
-        setSnapshots(snapshotsRes.value?.data || snapshotsRes.value || [])
-      } else {
-        setSnapshots([])
-        setSnapshotError(snapshotsRes.reason?.response?.data?.message || snapshotsRes.reason?.message || '报告快照暂不可用')
-      }
-      
+      const experimentData = experimentRes.status === 'fulfilled' ? (experimentRes.value.data || experimentRes.value) : null
+      const statisticsData = statisticsRes.status === 'fulfilled' ? (statisticsRes.value.data || statisticsRes.value) : null
+      const primaryMetricDefinition = resolvePrimaryMetricDefinition(experimentData, statisticsData?.summary)
+      const timelineMetricKey = primaryMetricDefinition?.key || statisticsData?.summary?.primaryMetricKey || 'CONVERSION_RATE'
+
+      const timelineRes = await Promise.allSettled([
+        analysisAPI.getTimeline(id, timelineMetricKey, 'DAY')
+      ])
+
+      setExperiment(experimentData)
+      setStatistics(statisticsData)
+      setDiagnosis(diagnosisRes.status === 'fulfilled' ? (diagnosisRes.value.data || diagnosisRes.value) : null)
+      setGraduation(graduationRes.status === 'fulfilled' ? (graduationRes.value.data || graduationRes.value) : null)
+      setTimeline(timelineRes[0].status === 'fulfilled' ? (timelineRes[0].value.data || timelineRes[0].value) : null)
     } catch (error) {
-      console.error('Failed to load analysis:', error)
+      console.error('Failed to load decision workspace:', error)
+      setExperiment(null)
+      setStatistics(null)
+      setDiagnosis(null)
+      setGraduation(null)
+      setTimeline(null)
     } finally {
       setLoading(false)
     }
   }
 
-  const loadAIInsights = async () => {
-    try {
-      setAiLoading(true)
-      setAiError('')
-
-      const [insightsRes, gradRes, predRes] = await Promise.allSettled([
-        analysisAPI.getAIInsights(id),
-        analysisAPI.autoGraduateDecision(id),
-        analysisAPI.predictCompletion(id)
-      ])
-
-      if (insightsRes.status === 'fulfilled') {
-        setAiInsights(insightsRes.value.data || insightsRes.value)
-      } else {
-        setAiInsights(null)
-        setAiError(insightsRes.reason?.response?.data?.message || insightsRes.reason?.message || 'AI 智能分析失败')
-      }
-
-      if (gradRes.status === 'fulfilled') {
-        setGraduation(gradRes.value.data || gradRes.value)
-      } else {
-        setGraduation(null)
-      }
-
-      if (predRes.status === 'fulfilled') {
-        setPrediction(predRes.value.data || predRes.value)
-      } else {
-        setPrediction(null)
-      }
-    } catch (error) {
-      console.error('Failed to load AI insights:', error)
-      setAiInsights(null)
-      setGraduation(null)
-      setPrediction(null)
-      setAiError(error.response?.data?.message || error.message || 'AI 智能分析失败')
-    } finally {
-      setAiLoading(false)
-    }
-  }
+  const workspaceModel = useMemo(
+    () => buildDecisionWorkspaceModel({ statistics, diagnosis, graduation }),
+    [statistics, diagnosis, graduation]
+  )
+  const primaryMetricDefinition = useMemo(
+    () => resolvePrimaryMetricDefinition(experiment, statistics?.summary),
+    [experiment, statistics?.summary]
+  )
+  const groupChartData = useMemo(
+    () => buildGroupChartData(statistics, primaryMetricDefinition),
+    [statistics, primaryMetricDefinition]
+  )
+  const timelineData = useMemo(
+    () => buildTimelineChartData({
+      ...timeline,
+      metricDefinition: primaryMetricDefinition
+    }),
+    [timeline, primaryMetricDefinition]
+  )
+  const timelineKeys = useMemo(() => Object.keys(timelineData[0] || {}).filter(key => key !== 'time'), [timelineData])
+  const primaryMetricLabel = primaryMetricDefinition?.name || statistics?.summary?.primaryMetricKey || '主要指标'
+  const isPrimaryMetricRate = primaryMetricDefinition?.aggregationType === 'RATE'
 
   const exportReport = async () => {
     try {
-      const res = await analysisAPI.exportReport(id)
-      setReport(res.data)
-      // 下载JSON报告
-      const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' })
+      setExporting(true)
+      const result = await analysisAPI.exportReport(id)
+      const report = result.data || result
+      const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `experiment-report-${id}.json`
-      a.click()
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `decision-workspace-${id}.json`
+      anchor.click()
       URL.revokeObjectURL(url)
     } catch (error) {
-      alert('导出失败: ' + error.message)
-    }
-  }
-
-  const createReportSnapshot = async () => {
-    try {
-      setSnapshotLoading(true)
-      await analysisAPI.createReportSnapshot(id, 'frontend')
-      await loadData()
-    } catch (error) {
-      alert('生成快照失败: ' + (error.response?.data?.message || error.message))
+      alert('导出失败: ' + (error.response?.data?.message || error.message))
     } finally {
-      setSnapshotLoading(false)
+      setExporting(false)
     }
-  }
-
-  const downloadSnapshot = (snapshot) => {
-    const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `experiment-snapshot-${id}-v${snapshot.snapshotVersion || snapshot.id || 'latest'}.json`
-    a.click()
-    URL.revokeObjectURL(url)
   }
 
   if (loading) {
     return (
       <div className="space-y-6">
-        <div className="h-12 w-64 bg-slate-700/30 rounded-lg animate-shimmer" />
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {[1, 2, 3].map(i => (
-            <div key={i} className="h-32 bg-slate-700/30 rounded-xl animate-shimmer" />
+        <div className="h-24 rounded-[1.2rem] bg-slate-200/60 animate-shimmer" />
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+          {[1, 2, 3].map(item => (
+            <div key={item} className="h-64 rounded-[1.2rem] bg-slate-200/60 animate-shimmer" />
           ))}
         </div>
       </div>
     )
   }
 
-  // 准备图表数据
-  const conversionData = statistics?.groupStatistics ? 
-    Object.entries(statistics.groupStatistics).map(([groupId, stats]) => ({
-      name: stats.groupName || groupId,
-      转化率: ((stats.conversionRate || 0) * 100).toFixed(2),
-      访客数: stats.userCount || 0,
-      转化数: stats.conversionCount || 0
-    })) : []
-
-  const pieData = statistics?.groupStatistics ?
-    Object.entries(statistics.groupStatistics).map(([groupId, stats]) => ({
-      name: stats.groupName || groupId,
-      value: stats.userCount || 0
-    })) : []
-
-  // 准备胜率图表数据
-  const winRateData = bayesian?.winRates ?
-    Object.entries(bayesian.winRates).map(([groupId, rate]) => ({
-      name: groupId,
-      胜率: (rate * 100).toFixed(1)
-    })) : []
-
-  // 准备时间线图表数据
-  const timelineData = buildTimelineChartData(timeline)
+  if (!experiment) {
+    return (
+      <div className="glass-card p-10 text-center">
+        <p className="text-xl font-semibold text-slate-900">实验不存在或数据暂不可用</p>
+        <button onClick={() => navigate('/experiments')} className="btn-primary mt-4">
+          返回实验工作台
+        </button>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <button
-            onClick={() => navigate(`/experiments/${id}`)}
-            className="p-2 rounded-lg hover:bg-slate-700/50 text-slate-400 hover:text-white transition-colors"
-          >
-            <ArrowLeft size={20} />
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <button onClick={() => navigate(`/experiments/${id}`)} className="btn-secondary">
+          <ArrowLeft size={18} />
+          返回实验详情
+        </button>
+        <div className="flex flex-wrap gap-3">
+          <button onClick={loadData} className="btn-secondary">
+            <Sparkles size={18} />
+            刷新结果
           </button>
-          <div>
-            <div className="eyebrow mb-3">Analysis</div>
-            <h1 className="page-title">数据分析</h1>
-            <p className="page-subtitle mt-2">{experiment?.name || id}</p>
-          </div>
-        </div>
-        <div className="flex gap-2">
-          <button onClick={loadData} className="btn-secondary flex items-center gap-2">
-            <RefreshCw size={16} /> 刷新
-          </button>
-          <button onClick={createReportSnapshot} disabled={snapshotLoading} className="btn-secondary flex items-center gap-2 disabled:opacity-60">
-            <Layers size={16} /> {snapshotLoading ? '生成快照中...' : '生成快照'}
-          </button>
-          <button onClick={exportReport} className="btn-primary flex items-center gap-2">
-            <Download size={16} /> 导出报告
-          </button>
-          <button onClick={goToAIInsights} className="btn-secondary flex items-center gap-2">
-            <Brain size={16} /> AI智能解读
-          </button>
-          <button onClick={goToAIInsights} className="btn-secondary flex items-center gap-2">
-            <Rocket size={16} /> 自动毕业决策
+          <button onClick={exportReport} disabled={exporting} className="btn-primary">
+            {exporting ? <Loader2 size={18} className="animate-spin" /> : <Download size={18} />}
+            导出决策报告
           </button>
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-2 border-b border-white/10 pb-2 overflow-x-auto">
-        {[
-          { key: 'overview', label: '总览', icon: BarChart3 },
-          { key: 'snapshots', label: '报告快照', icon: Layers },
-          { key: 'ai-insights', label: 'AI智能分析', icon: Brain },
-          { key: 'bayesian', label: '贝叶斯分析', icon: TrendingUp },
-          { key: 'significance', label: '显著性检验', icon: Target },
-          { key: 'timeline', label: '时间趋势', icon: Clock }
-        ].map(tab => (
-          <button
-            key={tab.key}
-            onClick={() => {
-              setActiveTab(tab.key)
-              if (tab.key === 'ai-insights' && !aiInsights) {
-                loadAIInsights()
-              }
-            }}
-            className={`px-4 py-2 rounded-xl text-sm font-medium transition-all flex items-center gap-2 whitespace-nowrap border ${
-              activeTab === tab.key
-                ? 'bg-blue-500/12 text-blue-200 border-blue-400/20'
-                : 'text-slate-400 border-transparent hover:text-white hover:bg-white/5 hover:border-white/5'
-            }`}
-          >
-            <tab.icon size={16} />
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Overview Tab */}
-      {activeTab === 'overview' && (
-        <div className="space-y-6">
-          {/* Summary Cards */}
-          {statistics?.summary && (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4">
-              <div className="glass-card p-4">
-                <p className="text-slate-400 text-sm">总分流数</p>
-                <p className="text-2xl font-bold text-white">
-                  {statistics.summary.totalAssignments?.toLocaleString() || 0}
-                </p>
-              </div>
-              <div className="glass-card p-4">
-                <p className="text-slate-400 text-sm">总曝光数</p>
-                <p className="text-2xl font-bold text-white">
-                  {statistics.summary.totalExposures?.toLocaleString() || 0}
-                </p>
-              </div>
-              <div className="glass-card p-4">
-                <p className="text-slate-400 text-sm">总访客数</p>
-                <p className="text-2xl font-bold text-white">
-                  {statistics.summary.totalVisitors?.toLocaleString() || 0}
-                </p>
-              </div>
-              <div className="glass-card p-4">
-                <p className="text-slate-400 text-sm">总事件数</p>
-                <p className="text-2xl font-bold text-white">
-                  {statistics.summary.totalEvents?.toLocaleString() || 0}
-                </p>
-              </div>
-              <div className="glass-card p-4">
-                <p className="text-slate-400 text-sm">总体转化率</p>
-                <p className="text-2xl font-bold text-emerald-400">
-                  {((statistics.summary.overallConversionRate || 0) * 100).toFixed(2)}%
-                </p>
-              </div>
-              <div className="glass-card p-4">
-                <p className="text-slate-400 text-sm">数据门禁</p>
-                <p className={`text-2xl font-bold ${statistics.dataQualityCheck?.analysisReady ? 'text-emerald-400' : 'text-amber-400'}`}>
-                  {statistics.dataQualityCheck?.analysisReady ? '通过' : '阻断'}
-                </p>
-              </div>
-            </div>
-          )}
-
-          {statistics?.dataQualityCheck && (
-            <div className="glass-card p-6">
-              <div className="flex items-center justify-between gap-3 mb-4">
-                <h3 className="text-lg font-semibold text-white">数据质量门禁</h3>
-                <span className={`badge border ${statistics.dataQualityCheck.analysisReady ? 'bg-emerald-500/15 text-emerald-200 border-emerald-400/20' : 'bg-amber-500/15 text-amber-200 border-amber-400/20'}`}>
-                  {statistics.dataQualityCheck.analysisReady ? '可用于决策' : '需要先修复'}
-                </span>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
-                <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
-                  <p className="text-slate-500 mb-1">SRM</p>
-                  <p className="text-white font-medium">{statistics.dataQualityCheck.hasSrm ? '存在异常' : '正常'}</p>
-                  <p className="text-slate-400 text-xs mt-1">
-                    {statistics.dataQualityCheck.srmPValue !== undefined && statistics.dataQualityCheck.srmPValue !== null
-                      ? `p = ${statistics.dataQualityCheck.srmPValue.toFixed(4)}`
-                      : '暂无 p 值'}
-                  </p>
-                </div>
-                <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
-                  <p className="text-slate-500 mb-1">建议样本量</p>
-                  <p className="text-white font-medium">
-                    {statistics.dataQualityCheck.requiredSampleSizePerGroup?.toLocaleString() || '-'}
-                  </p>
-                  <p className="text-slate-400 text-xs mt-1">
-                    {statistics.dataQualityCheck.sampleSizeReached ? '已达到建议阈值' : '尚未达到建议阈值'}
-                  </p>
-                </div>
-                <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
-                  <p className="text-slate-500 mb-1">阻断问题</p>
-                  <p className="text-white font-medium">
-                    {statistics.dataQualityCheck.blockingIssues?.length || 0} 项
-                  </p>
-                  <p className="text-slate-400 text-xs mt-1">需先处理后再决策</p>
-                </div>
-                <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
-                  <p className="text-slate-500 mb-1">护栏异常</p>
-                  <p className="text-white font-medium">
-                    {statistics.summary.breachedGuardrails?.length || 0} 项
-                  </p>
-                  <p className="text-slate-400 text-xs mt-1">直接影响毕业判断</p>
-                </div>
-              </div>
-              {(statistics.dataQualityCheck.blockingIssues?.length > 0 || statistics.dataQualityCheck.warnings?.length > 0) && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-                  {statistics.dataQualityCheck.blockingIssues?.length > 0 && (
-                    <div className="rounded-xl bg-rose-500/10 border border-rose-500/20 p-4">
-                      <p className="text-rose-200 font-medium mb-2">阻断问题</p>
-                      <ul className="space-y-1 text-sm text-rose-100/90">
-                        {statistics.dataQualityCheck.blockingIssues.map((issue, index) => (
-                          <li key={index}>• {issue}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                  {statistics.dataQualityCheck.warnings?.length > 0 && (
-                    <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 p-4">
-                      <p className="text-amber-200 font-medium mb-2">提示信息</p>
-                      <ul className="space-y-1 text-sm text-amber-100/90">
-                        {statistics.dataQualityCheck.warnings.map((warning, index) => (
-                          <li key={index}>• {warning}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {experiment?.groups && Object.keys(experiment.groups).length > 0 && (
-            <div className="glass-card p-6">
-              <div className="flex items-center justify-between gap-3 mb-4">
-                <h3 className="text-lg font-semibold text-white">实验组参数概览</h3>
-                <p className="text-slate-400 text-sm">只读展示，便于核对创建时的变体配置</p>
-              </div>
-              <div className="space-y-4">
-                {Object.entries(experiment.groups).map(([groupId, group]) => (
-                  <div key={groupId} className="rounded-xl border border-white/5 bg-slate-800/40 p-4">
-                    <div className="flex items-center justify-between gap-3 text-sm mb-3">
-                      <span className="text-white font-medium">{group.name || groupId}</span>
-                      <span className="text-slate-400">{((group.trafficRatio || 0) * 100).toFixed(0)}%</span>
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-xs">
-                      {group.config && Object.keys(group.config).length > 0 ? (
-                        Object.entries(group.config).map(([key, value]) => (
-                          <div key={key} className="rounded-lg bg-slate-950/40 border border-white/5 px-3 py-2">
-                            <p className="text-slate-500 mb-1">{key}</p>
-                            <p className="text-slate-100 break-words">{formatConfigValue(value)}</p>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="text-slate-500 text-sm">暂无变体参数</div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Charts */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Conversion Rate Chart */}
-            <div className="glass-card p-6">
-              <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-                <BarChart3 size={20} className="text-pisces-400" />
-                各组转化率对比
-              </h3>
-              <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={conversionData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                    <XAxis dataKey="name" stroke="#94a3b8" />
-                    <YAxis stroke="#94a3b8" />
-                    <Tooltip 
-                      contentStyle={{ 
-                        background: '#1e293b', 
-                        border: '1px solid #334155',
-                        borderRadius: '8px'
-                      }}
-                    />
-                    <Bar dataKey="转化率" fill="#0ea5e9" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-
-            {/* Traffic Distribution */}
-            <div className="glass-card p-6">
-              <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-                <Target size={20} className="text-accent-purple" />
-                流量分布
-              </h3>
-              <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={pieData}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={60}
-                      outerRadius={80}
-                      dataKey="value"
-                      label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
-                    >
-                      {pieData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                      ))}
-                    </Pie>
-                    <Tooltip />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
+      <section className="glass-card p-6">
+        <div className="flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
+          <div className="max-w-3xl">
+            <div className="eyebrow mb-3">Summary</div>
+            <h1 className="text-[2rem] font-bold tracking-[-0.04em] text-slate-900">{experiment.name}</h1>
+            <p className="mt-2 text-base leading-8 text-slate-600">{workspaceModel.hero.summary}</p>
+            <div className="mt-4 flex flex-wrap gap-3">
+              <span className={`badge border ${getDecisionClassName(workspaceModel.hero.decision)}`}>
+                决策 {workspaceModel.hero.decision}
+              </span>
+              <span className={`badge border ${getGuardrailClassName(workspaceModel.hero.guardrailStatus)}`}>
+                护栏 {workspaceModel.hero.guardrailStatus}
+              </span>
+              <span className="badge border border-slate-200 bg-slate-50 text-slate-700">
+                置信度 {(workspaceModel.hero.confidence * 100).toFixed(0)}%
+              </span>
             </div>
           </div>
 
-          {/* Group Details Table */}
-          {statistics?.groupStatistics && (
-            <div className="glass-card p-6">
-              <h3 className="text-lg font-semibold text-white mb-4">详细数据</h3>
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-slate-700/50">
-                      <th className="text-left p-3 text-slate-400 font-medium">实验组</th>
-                      <th className="text-right p-3 text-slate-400 font-medium">访客数</th>
-                      <th className="text-right p-3 text-slate-400 font-medium">浏览数</th>
-                      <th className="text-right p-3 text-slate-400 font-medium">点击数</th>
-                      <th className="text-right p-3 text-slate-400 font-medium">转化数</th>
-                      <th className="text-right p-3 text-slate-400 font-medium">点击率</th>
-                      <th className="text-right p-3 text-slate-400 font-medium">转化率</th>
-                      <th className="text-right p-3 text-slate-400 font-medium">提升率</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {Object.entries(statistics.groupStatistics).map(([groupId, stats]) => (
-                      <tr key={groupId} className="border-b border-slate-700/30">
-                        <td className="p-3">
-                          <div className="flex items-center gap-2">
-                            <span className="text-white font-medium">{stats.groupName || groupId}</span>
-                            {stats.isBaseline && (
-                              <span className="text-xs px-2 py-0.5 rounded bg-slate-600/50 text-slate-300">基准</span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="text-right p-3 text-white">{stats.userCount?.toLocaleString() || 0}</td>
-                        <td className="text-right p-3 text-white">{stats.viewCount?.toLocaleString() || 0}</td>
-                        <td className="text-right p-3 text-white">{stats.clickCount?.toLocaleString() || 0}</td>
-                        <td className="text-right p-3 text-white">{stats.conversionCount?.toLocaleString() || 0}</td>
-                        <td className="text-right p-3 text-white">
-                          {((stats.clickRate || 0) * 100).toFixed(2)}%
-                        </td>
-                        <td className="text-right p-3 text-emerald-400 font-medium">
-                          {((stats.conversionRate || 0) * 100).toFixed(2)}%
-                        </td>
-                        <td className="text-right p-3">
-                          {stats.liftRate !== undefined && stats.liftRate !== null ? (
-                            <span className={stats.liftRate >= 0 ? 'text-emerald-400' : 'text-red-400'}>
-                              {stats.liftRate >= 0 ? '+' : ''}{(stats.liftRate * 100).toFixed(2)}%
-                            </span>
-                          ) : '-'}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+          <div className="grid gap-3 md:grid-cols-3 xl:w-[620px]">
+            <div className="signal-card-tight">
+              <p className="signal-label">总访客</p>
+              <p className="signal-value">{workspaceModel.hero.totalVisitors.toLocaleString()}</p>
             </div>
-          )}
+            <div className="signal-card-tight">
+              <p className="signal-label">最佳实验组</p>
+              <p className="signal-value text-[var(--brand)]">{workspaceModel.hero.bestGroup}</p>
+            </div>
+            <div className="signal-card-tight">
+              <p className="signal-label">实验状态</p>
+              <p className="mt-3 text-lg font-bold text-[#9a6026]">{experiment.status}</p>
+            </div>
+          </div>
         </div>
-      )}
+      </section>
 
-      {/* Snapshots Tab */}
-      {activeTab === 'snapshots' && (
+      <section className="grid grid-cols-1 gap-6 xl:grid-cols-[1.02fr_0.98fr]">
         <div className="space-y-6">
           <div className="glass-card p-6">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="mb-5 flex items-center gap-3">
+              <ShieldAlert size={18} className="text-[#b44f42]" />
               <div>
-                <h3 className="text-lg font-semibold text-white">报告快照</h3>
-                <p className="text-slate-400 text-sm mt-1">
-                  快照记录每次分析结论，便于回溯、对比和归档。
-                </p>
-              </div>
-              <div className="flex gap-2">
-                <button onClick={loadData} className="btn-secondary flex items-center gap-2">
-                  <RefreshCw size={16} /> 刷新
-                </button>
-                <button onClick={createReportSnapshot} disabled={snapshotLoading} className="btn-primary flex items-center gap-2 disabled:opacity-60">
-                  <Layers size={16} /> {snapshotLoading ? '生成中...' : '生成快照'}
-                </button>
+                <h2 className="section-title">风险与护栏</h2>
+                <p className="section-meta">先处理阻塞条件，再决定毕业或继续加流量。</p>
               </div>
             </div>
-          </div>
-
-          {snapshotError && (
-            <div className="glass-card p-4 border border-amber-500/20 bg-amber-500/10">
-              <p className="text-amber-200 text-sm">{snapshotError}</p>
+            <div className="risk-strip">
+              {(workspaceModel.riskFlags.length > 0 ? workspaceModel.riskFlags : ['暂无风险标记']).map(flag => (
+                <span key={flag} className="risk-chip">
+                  <AlertTriangle size={14} />
+                  {flag}
+                </span>
+              ))}
             </div>
-          )}
-
-          {snapshots.length === 0 ? (
-            <div className="glass-card p-8 text-center">
-              <Layers size={44} className="mx-auto text-slate-600 mb-4" />
-              <p className="text-white font-medium mb-2">暂无报告快照</p>
-              <p className="text-slate-400 text-sm mb-4">点击“生成快照”即可将当前分析结果归档。</p>
-              <button onClick={createReportSnapshot} disabled={snapshotLoading} className="btn-primary inline-flex items-center gap-2 disabled:opacity-60">
-                <Layers size={16} /> 生成第一个快照
-              </button>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-              {snapshots.map(snapshot => (
-                <div key={snapshot.id} className="glass-card p-6">
-                  <div className="flex items-start justify-between gap-4 mb-4">
-                    <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="badge badge-draft">v{snapshot.snapshotVersion || '-'}</span>
-                        <span className={`badge border ${getConclusionStatusClass(snapshot.conclusionStatus)}`}>
-                          {getConclusionStatusLabel(snapshot.conclusionStatus)}
-                        </span>
-                      </div>
-                      <h3 className="text-lg font-semibold text-white">
-                        {snapshot.bestPerformingGroup || snapshot.winningVariant || '实验快照'}
-                      </h3>
-                      <p className="text-slate-400 text-sm mt-1">
-                        {snapshot.generatedAt ? new Date(snapshot.generatedAt).toLocaleString() : '-'} · {snapshot.generatedBy || 'system'}
-                      </p>
-                    </div>
-                    <button onClick={() => downloadSnapshot(snapshot)} className="btn-secondary text-sm">
-                      <Download size={16} /> 下载
-                    </button>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-                    <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
-                      <p className="text-slate-500 mb-1">主指标</p>
-                      <p className="text-white font-medium">{snapshot.primaryMetricKey || '-'}</p>
-                    </div>
-                    <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
-                      <p className="text-slate-500 mb-1">最佳实验组</p>
-                      <p className="text-white font-medium">{snapshot.bestPerformingGroup || '-'}</p>
-                    </div>
-                    <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
-                      <p className="text-slate-500 mb-1">胜出变体</p>
-                      <p className="text-white font-medium">{snapshot.winningVariant || '-'}</p>
-                    </div>
-                    <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
-                      <p className="text-slate-500 mb-1">分析门禁</p>
-                      <p className={`font-medium ${snapshot.analysisReady ? 'text-emerald-400' : 'text-amber-400'}`}>
-                        {snapshot.analysisReady ? '通过' : '阻断'}
-                      </p>
-                    </div>
-                  </div>
-
-                  {(snapshot.decisionContext || snapshot.breachedGuardrails?.length) && (
-                    <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
-                      <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
-                        <p className="text-slate-500 mb-1">SRM</p>
-                        <p className="text-white font-medium">
-                          {snapshot.decisionContext?.dataQualityCheck?.hasSrm ? '存在异常' : '正常'}
-                        </p>
-                      </div>
-                      <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
-                        <p className="text-slate-500 mb-1">护栏异常</p>
-                        <p className="text-white font-medium">{snapshot.breachedGuardrails?.length || 0} 项</p>
-                      </div>
-                      <div className="rounded-xl bg-slate-800/40 border border-white/5 p-4">
-                        <p className="text-slate-500 mb-1">结论上下文</p>
-                        <p className="text-white font-medium">
-                          {snapshot.decisionContext?.analysisReady === false ? '阻断' : '已归档'}
-                        </p>
-                      </div>
-                    </div>
-                  )}
+            <div className="mt-5 space-y-3">
+              {(workspaceModel.blockingIssues.length > 0 ? workspaceModel.blockingIssues : ['当前没有明显的阻塞项']).map(issue => (
+                <div key={issue} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-7 text-slate-600">
+                  {issue}
                 </div>
               ))}
             </div>
-          )}
-        </div>
-      )}
+          </div>
 
-      {/* AI Insights Tab */}
-      {activeTab === 'ai-insights' && (
-        <div className="space-y-6">
-          {aiLoading ? (
-            <div className="glass-card p-8 text-center">
-              <div className="animate-spin w-12 h-12 border-4 border-pisces-400 border-t-transparent rounded-full mx-auto mb-4" />
-              <p className="text-slate-400">AI正在分析实验数据...</p>
-            </div>
-          ) : (
-            <>
-              {aiError && (
-                <div className="glass-card p-4 border border-red-500/30 bg-red-500/10">
-                  <p className="text-red-300">{aiError}</p>
-                </div>
-              )}
-
-              {/* Data Summary Cards */}
-              {aiInsights?.dataSummary && (
-                <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-                  <div className="glass-card p-4">
-                    <p className="text-slate-400 text-sm">总访客</p>
-                    <p className="text-2xl font-bold text-white">
-                      {aiInsights.dataSummary.totalVisitors?.toLocaleString() || 0}
-                    </p>
-                  </div>
-                  <div className="glass-card p-4">
-                    <p className="text-slate-400 text-sm">最高胜率</p>
-                    <p className={`text-2xl font-bold ${(aiInsights.dataSummary.maxWinRate || 0) >= 0.95 ? 'text-emerald-400' : 'text-amber-400'}`}>
-                      {((aiInsights.dataSummary.maxWinRate || 0) * 100).toFixed(1)}%
-                    </p>
-                  </div>
-                  <div className="glass-card p-4">
-                    <p className="text-slate-400 text-sm">领先变体</p>
-                    <p className="text-2xl font-bold text-accent-purple">
-                      {aiInsights.dataSummary.winningVariant || '-'}
-                    </p>
-                  </div>
-                  <div className="glass-card p-4">
-                    <p className="text-slate-400 text-sm">统计显著</p>
-                    <p className={`text-2xl font-bold ${aiInsights.dataSummary.isStatisticallySignificant ? 'text-emerald-400' : 'text-amber-400'}`}>
-                      {aiInsights.dataSummary.isStatisticallySignificant ? '是' : '否'}
-                    </p>
-                  </div>
-                  <div className="glass-card p-4">
-                    <p className="text-slate-400 text-sm">数据健康度</p>
-                    <div className="flex items-center gap-2">
-                      <p className={`text-2xl font-bold ${
-                        aiInsights.dataSummary.healthScore >= 80 ? 'text-emerald-400' :
-                        aiInsights.dataSummary.healthScore >= 50 ? 'text-amber-400' : 'text-red-400'
-                      }`}>
-                        {aiInsights.dataSummary.healthScore || 0}分
-                      </p>
-                      <span className="text-sm text-slate-400">
-                        ({aiInsights.dataSummary.healthStatus})
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Key Insights Cards */}
-              {aiInsights?.keyInsights && (
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="glass-card p-4 border-l-4 border-accent-purple">
-                    <p className="text-slate-400 text-sm">最佳变体</p>
-                    <p className="text-xl font-bold text-accent-purple">
-                      {aiInsights.keyInsights.winningVariant || '-'}
-                    </p>
-                  </div>
-                  <div className="glass-card p-4 border-l-4 border-pisces-400">
-                    <p className="text-slate-400 text-sm">置信度</p>
-                    <p className="text-xl font-bold text-pisces-400">
-                      {((aiInsights.keyInsights.confidenceLevel || 0) * 100).toFixed(1)}%
-                    </p>
-                  </div>
-                  <div className={`glass-card p-4 border-l-4 ${aiInsights.keyInsights.readyForDecision ? 'border-emerald-400' : 'border-amber-400'}`}>
-                    <p className="text-slate-400 text-sm">决策状态</p>
-                    <p className={`text-xl font-bold ${aiInsights.keyInsights.readyForDecision ? 'text-emerald-400' : 'text-amber-400'}`}>
-                      {aiInsights.keyInsights.readyForDecision ? '✓ 可以决策' : '⏳ 继续观察'}
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              {/* Recommendations */}
-              {aiInsights?.recommendations && aiInsights.recommendations.length > 0 && (
-                <div className="glass-card p-6">
-                  <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-                    <Zap size={20} className="text-amber-400" />
-                    可操作建议
-                  </h3>
-                  <div className="space-y-3">
-                    {aiInsights.recommendations.map((rec, idx) => (
-                      <div 
-                        key={idx} 
-                        className={`p-4 rounded-xl border ${
-                          rec.priority === 'HIGH' ? 'bg-red-500/10 border-red-500/30' :
-                          rec.priority === 'MEDIUM' ? 'bg-amber-500/10 border-amber-500/30' :
-                          'bg-slate-800/50 border-slate-700/50'
-                        }`}
-                      >
-                        <div className="flex items-start justify-between gap-4">
-                          <div>
-                            <div className="flex items-center gap-2 mb-1">
-                              <span className={`text-xs px-2 py-0.5 rounded-full ${
-                                rec.priority === 'HIGH' ? 'bg-red-500/30 text-red-400' :
-                                rec.priority === 'MEDIUM' ? 'bg-amber-500/30 text-amber-400' :
-                                'bg-slate-600/50 text-slate-400'
-                              }`}>
-                                {rec.priority === 'HIGH' ? '紧急' : rec.priority === 'MEDIUM' ? '建议' : '可选'}
-                              </span>
-                              <span className="text-xs text-slate-500">{rec.type}</span>
-                            </div>
-                            <p className="text-white font-medium">{rec.title}</p>
-                            <p className="text-slate-400 text-sm mt-1">{rec.description}</p>
-                          </div>
-                          <div className="text-right flex-shrink-0">
-                            <p className="text-xs text-slate-500">预期效果</p>
-                            <p className="text-sm text-pisces-400">{rec.expectedImpact}</p>
-                          </div>
-                        </div>
-                        {rec.action && (
-                          <div className="mt-3 pt-3 border-t border-slate-700/50">
-                            <p className="text-sm text-slate-300">
-                              <span className="text-slate-500">操作：</span>{rec.action}
-                            </p>
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* AI Analysis Report */}
-              {aiInsights && (
-                <div className="glass-card p-6">
-                  <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-                    <Brain size={20} className="text-pisces-400" />
-                    AI智能分析报告
-                  </h3>
-                  <div className="prose prose-invert max-w-none">
-                    <div className="whitespace-pre-wrap text-slate-300 leading-relaxed bg-slate-800/50 rounded-xl p-6">
-                      {aiInsights.aiAnalysis || '暂无分析结果'}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Graduation Decision */}
-              {graduation && (
-                <div className="glass-card p-6">
-                  <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-                    <Rocket size={20} className="text-emerald-400" />
-                    自动毕业决策
-                  </h3>
-                  <div className={`p-4 rounded-xl mb-4 ${
-                    graduation.canGraduate 
-                      ? 'bg-emerald-500/10 border border-emerald-500/30' 
-                      : 'bg-amber-500/10 border border-amber-500/30'
-                  }`}>
-                    <div className="flex items-center gap-3">
-                      {graduation.canGraduate ? (
-                        <CheckCircle size={24} className="text-emerald-400" />
-                      ) : (
-                        <AlertCircle size={24} className="text-amber-400" />
-                      )}
-                      <div>
-                        <p className={`font-semibold ${graduation.canGraduate ? 'text-emerald-400' : 'text-amber-400'}`}>
-                          {graduation.canGraduate ? '可以全量发布' : '建议继续实验'}
-                        </p>
-                        <p className="text-slate-400 text-sm">
-                          推荐变体: {graduation.recommendedVariant || '-'} | 
-                          置信度: {((graduation.confidence || 0) * 100).toFixed(1)}% | 
-                          风险等级: {graduation.riskLevel || '-'}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                  
-                  {graduation.reasons && graduation.reasons.length > 0 && (
-                    <div className="mb-4">
-                      <p className="text-slate-400 text-sm mb-2">决策依据:</p>
-                      <ul className="space-y-1">
-                        {graduation.reasons.map((reason, idx) => (
-                          <li key={idx} className="text-slate-300 text-sm flex items-start gap-2">
-                            <Sparkles size={14} className="text-pisces-400 mt-0.5" />
-                            {reason}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  {graduation.graduationPlan && (
-                    <div className="p-4 rounded-xl bg-slate-800/50">
-                      <p className="text-white font-medium mb-3">发布计划</p>
-                      <div className="space-y-2">
-                        {graduation.graduationPlan.steps?.map((step, idx) => (
-                          <div key={idx} className="flex items-center gap-3">
-                            <span className="w-6 h-6 rounded-full bg-pisces-500/30 text-pisces-400 text-xs flex items-center justify-center">
-                              {step.step}
-                            </span>
-                            <div>
-                              <p className="text-white text-sm">{step.action}</p>
-                              <p className="text-slate-400 text-xs">{step.description}</p>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Prediction */}
-              {prediction && (
-                <div className="glass-card p-6">
-                  <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-                    <Clock size={20} className="text-amber-400" />
-                    实验完成预测
-                  </h3>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                    <div className="p-4 rounded-xl bg-slate-800/50">
-                      <p className="text-slate-400 text-sm">当前进度</p>
-                      <p className="text-xl font-bold text-white">
-                        {((prediction.currentProgress || 0) * 100).toFixed(0)}%
-                      </p>
-                      <div className="w-full bg-slate-700 rounded-full h-2 mt-2">
-                        <div 
-                          className="bg-pisces-500 h-2 rounded-full" 
-                          style={{ width: `${(prediction.currentProgress || 0) * 100}%` }}
-                        />
-                      </div>
-                    </div>
-                    <div className="p-4 rounded-xl bg-slate-800/50">
-                      <p className="text-slate-400 text-sm">已运行天数</p>
-                      <p className="text-xl font-bold text-white">{prediction.daysRunning || 0} 天</p>
-                    </div>
-                    <div className="p-4 rounded-xl bg-slate-800/50">
-                      <p className="text-slate-400 text-sm">预计剩余</p>
-                      <p className="text-xl font-bold text-amber-400">
-                        {prediction.estimatedDaysRemaining > 0 ? `${prediction.estimatedDaysRemaining} 天` : prediction.status === 'COMPLETED' ? '已完成' : '评估中'}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="p-4 rounded-xl bg-slate-800/50">
-                    <p className="text-slate-300">{prediction.message}</p>
-                  </div>
-                  {prediction.accelerationTips && prediction.accelerationTips.length > 0 && (
-                    <div className="mt-4">
-                      <p className="text-slate-400 text-sm mb-2 flex items-center gap-2">
-                        <Zap size={14} /> 加速建议
-                      </p>
-                      <ul className="space-y-1">
-                        {prediction.accelerationTips.map((tip, idx) => (
-                          <li key={idx} className="text-slate-300 text-sm">• {tip}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {!aiInsights && !aiLoading && (
-                <div className="glass-card p-8 text-center">
-                  <Brain size={48} className="text-slate-600 mx-auto mb-4" />
-                  <p className="text-slate-400 mb-4">点击加载AI智能分析</p>
-                  <button onClick={loadAIInsights} className="btn-primary flex items-center gap-2 mx-auto">
-                    <Sparkles size={16} /> 开始AI分析
-                  </button>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      )}
-
-      {/* Bayesian Tab */}
-      {activeTab === 'bayesian' && bayesian && (
-        <div className="space-y-6">
           <div className="glass-card p-6">
-            <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-              <TrendingUp size={20} className="text-pisces-400" />
-              贝叶斯胜率分析
-            </h3>
-            <p className="text-slate-400 mb-4">基准组: {bayesian.baselineGroup}</p>
-            
-            {/* Win Rate Bar Chart */}
-            {winRateData.length > 0 && (
-              <div className="h-64 mb-6">
+            <div className="mb-5 flex items-center gap-3">
+              <BrainCircuit size={18} className="text-[var(--brand)]" />
+              <div>
+                <h2 className="section-title">建议动作</h2>
+                <p className="section-meta">动作只给建议，不会自动执行。</p>
+              </div>
+            </div>
+            <div className="space-y-4">
+              {workspaceModel.actions.length === 0 ? (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">当前没有额外推荐动作。</div>
+              ) : (
+                workspaceModel.actions.map(action => (
+                  <div key={action.title + action.action} className="rounded-[1.2rem] border border-slate-200 bg-white p-5">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <h3 className="font-semibold text-slate-900">{action.title}</h3>
+                      <span className="badge border border-[#ecd8bf] bg-[#fff8ef] text-[#9a6026]">{action.executionMode}</span>
+                    </div>
+                    <p className="mt-3 text-sm leading-7 text-slate-600">{action.action}</p>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="glass-card p-6">
+          <div className="mb-5 flex items-center gap-3">
+              <CheckCircle2 size={18} className="text-[#1e7e57]" />
+            <div>
+              <h2 className="section-title">事实层摘要</h2>
+              <p className="section-meta">把结论和统计事实放在一起，方便交叉判断。</p>
+            </div>
+          </div>
+          <div className="fact-grid md:grid-cols-2">
+            <div className="fact-tile">
+                <p className="text-sm text-slate-500">主要指标</p>
+                <p className="mt-2 text-lg font-bold text-slate-900">
+                  {primaryMetricDefinition?.name || workspaceModel.facts.primaryMetricKey}
+                </p>
+                {primaryMetricDefinition?.key ? (
+                  <p className="mt-1 text-xs text-slate-500">{primaryMetricDefinition.key}</p>
+                ) : null}
+            </div>
+            <div className="fact-tile">
+                <p className="text-sm text-slate-500">最佳{primaryMetricLabel}</p>
+                <p className="mt-2 text-lg font-bold text-[var(--brand)]">
+                  {workspaceModel.facts.bestPrimaryMetricValue != null
+                    ? (isPrimaryMetricRate
+                      ? `${(workspaceModel.facts.bestPrimaryMetricValue * 100).toFixed(2)}%`
+                      : workspaceModel.facts.bestPrimaryMetricValue.toFixed(2))
+                    : '-'}
+                </p>
+            </div>
+            <div className="fact-tile">
+                <p className="text-sm text-slate-500">最佳实验组</p>
+                <p className="mt-2 text-lg font-bold text-[var(--brand)]">{workspaceModel.hero.bestGroup}</p>
+            </div>
+            <div className="fact-tile">
+                <p className="text-sm text-slate-500">分析就绪</p>
+                <p className="mt-2 text-lg font-bold text-slate-900">{workspaceModel.facts.analysisReady ? '已就绪' : '未就绪'}</p>
+            </div>
+            <div className="fact-tile">
+                <p className="text-sm text-slate-500">SRM 检测</p>
+                <p className="mt-2 text-lg font-bold text-slate-900">{workspaceModel.facts.srmDetected ? '已发现' : '未发现'}</p>
+            </div>
+          </div>
+
+          <div className="mt-6 rounded-[1.2rem] border border-slate-200 bg-slate-50 p-5">
+            <div className="mb-4 flex items-center gap-3">
+              <BarChart3 size={18} className="text-[#9a6026]" />
+              <h3 className="font-semibold text-slate-900">组间指标对比</h3>
+            </div>
+            {groupChartData.length === 0 ? (
+              <p className="text-sm text-slate-400">暂无组间统计数据</p>
+            ) : (
+              <div className="h-72">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={winRateData} layout="vertical">
-                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                    <XAxis type="number" domain={[0, 100]} stroke="#94a3b8" />
-                    <YAxis type="category" dataKey="name" stroke="#94a3b8" />
-                    <Tooltip 
-                      contentStyle={{ 
-                        background: '#1e293b', 
-                        border: '1px solid #334155',
-                        borderRadius: '8px'
+                  <BarChart data={groupChartData}>
+                    <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
+                    <XAxis dataKey="group" stroke="#94a3b8" tickLine={false} axisLine={false} />
+                    <YAxis stroke="#94a3b8" tickLine={false} axisLine={false} />
+                    <Tooltip
+                      contentStyle={{
+                        background: '#ffffff',
+                        border: '1px solid rgba(148, 163, 184, 0.18)',
+                        borderRadius: '16px'
                       }}
-                      formatter={(value) => [`${value}%`, '胜率']}
                     />
-                    <Bar dataKey="胜率" fill="#8b5cf6" radius={[0, 4, 4, 0]} />
+                    <Legend />
+                    <Bar
+                      dataKey="primaryMetric"
+                      name={isPrimaryMetricRate ? `${primaryMetricLabel} %` : primaryMetricLabel}
+                      fill="#ff8b5d"
+                      radius={[8, 8, 0, 0]}
+                    />
+                    <Bar dataKey="liftRate" name="提升率 %" fill="#4cc9f0" radius={[8, 8, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
             )}
-            
-            {bayesian.winRates && (
-              <div className="space-y-4">
-                {Object.entries(bayesian.winRates).map(([groupId, winRate]) => (
-                  <div key={groupId} className="p-4 rounded-xl bg-slate-800/50">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-white font-medium">{groupId}</span>
-                      <span className={`text-lg font-bold ${winRate >= 0.95 ? 'text-emerald-400' : winRate <= 0.05 ? 'text-red-400' : 'text-amber-400'}`}>
-                        {(winRate * 100).toFixed(1)}%
-                      </span>
-                    </div>
-                    <div className="w-full bg-slate-700 rounded-full h-3">
-                      <div
-                        className={`h-3 rounded-full ${winRate >= 0.95 ? 'bg-emerald-500' : winRate <= 0.05 ? 'bg-red-500' : 'bg-amber-500'}`}
-                        style={{ width: `${winRate * 100}%` }}
-                      />
-                    </div>
-                    <p className="text-sm text-slate-400 mt-2">
-                      {winRate >= 0.95 ? (
-                        <span className="flex items-center gap-1 text-emerald-400">
-                          <CheckCircle size={14} /> 可以提前终止实验，全量上线此变体
-                        </span>
-                      ) : winRate <= 0.05 ? (
-                        <span className="flex items-center gap-1 text-red-400">
-                          <XCircle size={14} /> 可以提前终止实验，放弃此变体
-                        </span>
-                      ) : (
-                        <span className="flex items-center gap-1 text-amber-400">
-                          <AlertCircle size={14} /> 需要继续收集数据
-                        </span>
-                      )}
-                    </p>
-                  </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="glass-card p-6">
+          <div className="mb-5 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+            <TrendingUp size={18} className="text-[var(--brand)]" />
+            <div>
+              <h2 className="section-title">时间线证据</h2>
+              <p className="section-meta">围绕当前实验的主要指标查看时间序列走势。</p>
+            </div>
+          </div>
+          <Link to={`/experiments/${id}`} className="btn-secondary">
+            返回实验配置
+          </Link>
+        </div>
+
+        {timelineData.length === 0 ? (
+          <div className="rounded-[1.5rem] border border-white/8 bg-white/[0.03] p-5 text-sm text-slate-400">暂无时间线数据</div>
+        ) : (
+          <div className="h-80">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={timelineData}>
+                <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
+                <XAxis dataKey="time" stroke="#94a3b8" tickLine={false} axisLine={false} />
+                <YAxis stroke="#94a3b8" tickLine={false} axisLine={false} />
+                <Tooltip
+                  contentStyle={{
+                    background: '#ffffff',
+                    border: '1px solid rgba(148, 163, 184, 0.18)',
+                    borderRadius: '16px'
+                  }}
+                />
+                <Legend />
+                {timelineKeys.map((key, index) => (
+                  <Line
+                    key={key}
+                    type="monotone"
+                    dataKey={key}
+                    stroke={CHART_COLORS[index % CHART_COLORS.length]}
+                    strokeWidth={2.5}
+                    dot={false}
+                  />
                 ))}
-              </div>
-            )}
+              </LineChart>
+            </ResponsiveContainer>
           </div>
-        </div>
-      )}
-
-      {/* Significance Tab */}
-      {activeTab === 'significance' && significance && (
-        <div className="space-y-6">
-          <div className="glass-card p-6">
-            <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-              <Target size={20} className="text-accent-purple" />
-              统计显著性检验
-            </h3>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="p-4 rounded-xl bg-slate-800/50">
-                <p className="text-slate-400 text-sm mb-1">Z统计量</p>
-                <p className="text-2xl font-bold text-white">{significance.zStatistic?.toFixed(4)}</p>
-              </div>
-              <div className="p-4 rounded-xl bg-slate-800/50">
-                <p className="text-slate-400 text-sm mb-1">P值</p>
-                <p className={`text-2xl font-bold ${significance.pValue < 0.05 ? 'text-emerald-400' : 'text-amber-400'}`}>
-                  {significance.pValue?.toFixed(4)}
-                </p>
-              </div>
-              <div className="p-4 rounded-xl bg-slate-800/50">
-                <p className="text-slate-400 text-sm mb-1">相对提升</p>
-                <p className={`text-2xl font-bold ${significance.relativeLift >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                  {significance.relativeLift >= 0 ? '+' : ''}{(significance.relativeLiftPercent || 0).toFixed(2)}%
-                </p>
-              </div>
-              <div className="p-4 rounded-xl bg-slate-800/50">
-                <p className="text-slate-400 text-sm mb-1">置信区间 (95%)</p>
-                <p className="text-xl font-bold text-white">
-                  [{((significance.confidenceInterval?.lower || 0) * 100).toFixed(2)}%, 
-                   {((significance.confidenceInterval?.upper || 0) * 100).toFixed(2)}%]
-                </p>
-              </div>
-            </div>
-
-            <div className={`mt-6 p-4 rounded-xl ${significance.isStatisticallySignificant ? 'bg-emerald-500/10 border border-emerald-500/30' : 'bg-amber-500/10 border border-amber-500/30'}`}>
-              <p className={significance.isStatisticallySignificant ? 'text-emerald-400' : 'text-amber-400'}>
-                {significance.conclusion}
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Timeline Tab */}
-      {activeTab === 'timeline' && (
-        <div className="space-y-6">
-          <div className="glass-card p-6">
-            <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-              <Clock size={20} className="text-amber-400" />
-              转化率趋势
-            </h3>
-            {timeline?.note && (
-              <p className="text-slate-400 text-sm mb-4">{timeline.note}</p>
-            )}
-            {timelineData.length > 0 ? (
-              <div className="h-80">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={timelineData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                    <XAxis dataKey="time" stroke="#94a3b8" />
-                    <YAxis stroke="#94a3b8" />
-                    <Tooltip 
-                      contentStyle={{ 
-                        background: '#1e293b', 
-                        border: '1px solid #334155',
-                        borderRadius: '8px'
-                      }}
-                    />
-                    <Legend />
-                    {experiment?.groups && Object.keys(experiment.groups).map((groupId, idx) => (
-                      <Area 
-                        key={groupId}
-                        type="monotone" 
-                        dataKey={groupId} 
-                        stroke={COLORS[idx % COLORS.length]}
-                        fill={COLORS[idx % COLORS.length]}
-                        fillOpacity={0.3}
-                      />
-                    ))}
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            ) : (
-              <p className="text-slate-400 text-center py-8">暂无时间线数据</p>
-            )}
-          </div>
-        </div>
-      )}
+        )}
+      </section>
     </div>
   )
 }

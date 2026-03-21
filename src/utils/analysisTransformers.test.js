@@ -25,3 +25,31 @@ test('buildTimelineChartData converts rate metrics to percentages', () => {
     }
   ])
 })
+
+test('buildTimelineChartData converts custom rate metrics to percentages', () => {
+  const chartData = buildTimelineChartData({
+    metricType: 'PAYMENT_RATE',
+    metricDefinition: {
+      key: 'PAYMENT_RATE',
+      aggregationType: 'RATE'
+    },
+    granularity: 'DAY',
+    dataPoints: [
+      {
+        bucketStart: '2026-03-02T00:00:00',
+        values: {
+          control: 0.15,
+          variant: 0.19
+        }
+      }
+    ]
+  })
+
+  assert.deepEqual(chartData, [
+    {
+      time: '03-02',
+      control: 15,
+      variant: 19
+    }
+  ])
+})
