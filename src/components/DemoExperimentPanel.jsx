@@ -108,6 +108,21 @@ export default function DemoExperimentPanel({
                   <span className="badge border border-slate-200 bg-white text-slate-700">
                     是否可停止 {card.canStop ? '是' : '否'}
                   </span>
+                  <span className="badge border border-slate-200 bg-white text-slate-700">
+                    AI 决策 {card.aiDecision}
+                  </span>
+                  <span className="badge border border-slate-200 bg-white text-slate-700">
+                    守护状态 {card.aiGuardrailStatus}
+                  </span>
+                  <span className="badge border border-slate-200 bg-white text-slate-700">
+                    主指标 {card.primaryMetricKey}
+                  </span>
+                  <span className="badge border border-slate-200 bg-white text-slate-700">
+                    {card.groupCount} 个实验组
+                  </span>
+                  <span className="badge border border-slate-200 bg-white text-slate-700">
+                    {card.schemaFieldCount} 个配置字段
+                  </span>
                 </div>
 
                 <div className="mt-5 flex flex-wrap gap-3">

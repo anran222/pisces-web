@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildTimelineChartData } from './analysisTransformers.js'
+import { buildGroupChartData, buildTimelineChartData } from './analysisTransformers.js'
 
 test('buildTimelineChartData converts rate metrics to percentages', () => {
   const chartData = buildTimelineChartData({
@@ -50,6 +50,53 @@ test('buildTimelineChartData converts custom rate metrics to percentages', () =>
       time: '03-02',
       control: 15,
       variant: 19
+    }
+  ])
+})
+
+test('buildGroupChartData prefers compare lift rate when present', () => {
+  const chartData = buildGroupChartData(
+    {
+      groupStatistics: {
+        A: {
+          groupId: 'A',
+          groupName: '对照组',
+          metricValues: { PAYMENT_RATE: 0.1 },
+          conversionRate: 0.1,
+          userCount: 100
+        },
+        B: {
+          groupId: 'B',
+          groupName: '实验组',
+          metricValues: { PAYMENT_RATE: 0.12 },
+          conversionRate: 0.12,
+          liftRate: 0.05,
+          userCount: 100
+        }
+      }
+    },
+    { key: 'PAYMENT_RATE', aggregationType: 'RATE' },
+    {
+      comparisons: {
+        B: {
+          conversionRateChangePercent: 20
+        }
+      }
+    }
+  )
+
+  assert.deepEqual(chartData, [
+    {
+      group: '对照组',
+      primaryMetric: 10,
+      liftRate: 0,
+      visitors: 100
+    },
+    {
+      group: '实验组',
+      primaryMetric: 12,
+      liftRate: 20,
+      visitors: 100
     }
   ])
 })

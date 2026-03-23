@@ -28,6 +28,7 @@ import {
   resolveExperimentGroupName,
   resolvePrimaryMetricDefinition
 } from '../utils/experimentDetailUtils'
+import { buildEditableGroupSummary, getEditableGroupPanelKey } from '../utils/editableGroupUtils'
 import {
   buildEmptyEventDefinition,
   buildEmptyGroupConfigField,
@@ -200,6 +201,7 @@ export default function ExperimentDetail() {
   const [conclusionSaving, setConclusionSaving] = useState(false)
   const [statsError, setStatsError] = useState('')
   const [expandedGroupId, setExpandedGroupId] = useState(null)
+  const [expandedEditGroupPanels, setExpandedEditGroupPanels] = useState({})
 
   useEffect(() => {
     loadData()
@@ -467,13 +469,22 @@ export default function ExperimentDetail() {
     }))
   }
 
+  const toggleEditGroupPanel = (groupKey) => {
+    setExpandedEditGroupPanels(current => ({
+      ...current,
+      [groupKey]: !current[groupKey]
+    }))
+  }
+
   const handleEditStart = () => {
     setEditDraft(buildExperimentDraftFromResponse(experiment))
+    setExpandedEditGroupPanels({})
     setIsEditing(true)
   }
 
   const handleEditCancel = () => {
     setEditDraft(buildExperimentDraftFromResponse(experiment))
+    setExpandedEditGroupPanels({})
     setIsEditing(false)
   }
 
@@ -1062,91 +1073,120 @@ export default function ExperimentDetail() {
               <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5">
                 <h3 className="font-semibold text-slate-900">实验组配置</h3>
                 <div className="mt-4 space-y-3">
-                  {editGroups.map((group, index) => (
-                    <div key={group.id || index} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                      <div className="grid gap-3 md:grid-cols-2">
-                        <div>
-                          <label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">实验组 ID</label>
+                  {editGroups.map((group, index) => {
+                    const groupKey = getEditableGroupPanelKey(group, index)
+                    const isExpanded = Boolean(expandedEditGroupPanels[groupKey])
+                    const summary = buildEditableGroupSummary(group, editGroupConfigSchema)
+
+                    return (
+                      <div key={groupKey} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <div>
+                            <label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">实验组 ID</label>
+                            <input
+                              value={group.id || ''}
+                              onChange={(event) => updateGroupField(index, 'id', event.target.value)}
+                              className="input"
+                            />
+                          </div>
+                          <div>
+                            <label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">实验组名称</label>
+                            <input
+                              value={group.name || ''}
+                              onChange={(event) => updateGroupField(index, 'name', event.target.value)}
+                              className="input"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="mt-3">
+                          <label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">流量比例</label>
                           <input
-                            value={group.id || ''}
-                            onChange={(event) => updateGroupField(index, 'id', event.target.value)}
+                            type="number"
+                            min="0"
+                            max="1"
+                            step="0.01"
+                            value={group.trafficRatio ?? 0}
+                            onChange={(event) => updateGroupField(index, 'trafficRatio', event.target.value)}
                             className="input"
                           />
                         </div>
-                        <div>
-                          <label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">实验组名称</label>
-                          <input
-                            value={group.name || ''}
-                            onChange={(event) => updateGroupField(index, 'name', event.target.value)}
-                            className="input"
-                          />
-                        </div>
-                      </div>
 
-                      <div className="mt-3">
-                        <label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">流量比例</label>
-                        <input
-                          type="number"
-                          min="0"
-                          max="1"
-                          step="0.01"
-                          value={group.trafficRatio ?? 0}
-                          onChange={(event) => updateGroupField(index, 'trafficRatio', event.target.value)}
-                          className="input"
-                        />
-                      </div>
-
-                      {editGroupConfigSchema.length > 0 ? (
-                        <div className="mt-4 space-y-3">
-                          {editGroupConfigSchema.map(field => (
-                            <div key={`${group.id || index}-${field.key || 'field'}`} className="rounded-xl bg-white px-4 py-3">
-                              <div className="mb-2 flex items-center justify-between gap-3">
-                                <div>
-                                  <p className="text-sm font-medium text-slate-900">{field.label || field.key || '未命名字段'}</p>
-                                  <p className="text-xs text-slate-500">{field.key || '请先填写字段 key'} · {getOptionLabel(GROUP_CONFIG_VALUE_TYPE_OPTIONS, field.valueType, field.valueType)}</p>
-                                </div>
-                                {field.required ? (
-                                  <span className="badge border border-[#ecd8bf] bg-[#fff8ef] text-[#9a6026]">必填</span>
-                                ) : null}
-                              </div>
-                              {(field.valueType === 'OBJECT' || field.valueType === 'JSON') ? (
-                                <textarea
-                                  value={formatConfigValue(group.config?.[field.key] ?? field.defaultValue).replace(/^-$|^null$/g, '')}
-                                  onChange={(event) => updateGroupConfigValue(index, field.key, event.target.value)}
-                                  className="textarea min-h-[110px]"
-                                  placeholder={field.valueType === 'OBJECT' ? '{"theme":"standard"}' : '["标签1","标签2"]'}
-                                  disabled={!field.key}
-                                />
-                              ) : field.valueType === 'BOOLEAN' ? (
-                                <select
-                                  value={String(group.config?.[field.key] ?? field.defaultValue ?? '')}
-                                  onChange={(event) => updateGroupConfigValue(index, field.key, event.target.value)}
-                                  className="input"
-                                  disabled={!field.key}
-                                >
-                                  <option value="">未设置</option>
-                                  <option value="true">true</option>
-                                  <option value="false">false</option>
-                                </select>
-                              ) : (
-                                <input
-                                  type={field.valueType === 'INTEGER' ? 'number' : 'text'}
-                                  value={group.config?.[field.key] ?? field.defaultValue ?? ''}
-                                  onChange={(event) => updateGroupConfigValue(index, field.key, event.target.value)}
-                                  className="input"
-                                  placeholder={field.description || `填写 ${field.label || field.key || '配置值'}`}
-                                  disabled={!field.key}
-                                />
-                              )}
-                              {field.description ? (
-                                <p className="mt-2 text-xs leading-6 text-slate-500">{field.description}</p>
-                              ) : null}
+                        <button
+                          type="button"
+                          onClick={() => toggleEditGroupPanel(groupKey)}
+                          className="mt-4 flex w-full items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-3 text-left transition-colors hover:border-slate-300 hover:bg-slate-50"
+                        >
+                          <div>
+                            <p className="text-sm font-medium text-slate-900">字段配置</p>
+                            <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-500">
+                              <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{summary.groupName}</span>
+                              <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{summary.groupId || '未设置 ID'}</span>
+                              <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">流量 {summary.trafficPercent}</span>
+                              <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{summary.configCount} 个配置项</span>
                             </div>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  ))}
+                          </div>
+                          {isExpanded ? <ChevronUp size={18} className="text-slate-500" /> : <ChevronDown size={18} className="text-slate-500" />}
+                        </button>
+
+                        {isExpanded ? (
+                          editGroupConfigSchema.length > 0 ? (
+                            <div className="mt-4 space-y-3">
+                              {editGroupConfigSchema.map(field => (
+                                <div key={`${group.id || index}-${field.key || 'field'}`} className="rounded-xl bg-white px-4 py-3">
+                                  <div className="mb-2 flex items-center justify-between gap-3">
+                                    <div>
+                                      <p className="text-sm font-medium text-slate-900">{field.label || field.key || '未命名字段'}</p>
+                                      <p className="text-xs text-slate-500">{field.key || '请先填写字段 key'} · {getOptionLabel(GROUP_CONFIG_VALUE_TYPE_OPTIONS, field.valueType, field.valueType)}</p>
+                                    </div>
+                                    {field.required ? (
+                                      <span className="badge border border-[#ecd8bf] bg-[#fff8ef] text-[#9a6026]">必填</span>
+                                    ) : null}
+                                  </div>
+                                  {(field.valueType === 'OBJECT' || field.valueType === 'JSON') ? (
+                                    <textarea
+                                      value={formatConfigValue(group.config?.[field.key] ?? field.defaultValue).replace(/^-$|^null$/g, '')}
+                                      onChange={(event) => updateGroupConfigValue(index, field.key, event.target.value)}
+                                      className="textarea min-h-[110px]"
+                                      placeholder={field.valueType === 'OBJECT' ? '{"theme":"standard"}' : '["标签1","标签2"]'}
+                                      disabled={!field.key}
+                                    />
+                                  ) : field.valueType === 'BOOLEAN' ? (
+                                    <select
+                                      value={String(group.config?.[field.key] ?? field.defaultValue ?? '')}
+                                      onChange={(event) => updateGroupConfigValue(index, field.key, event.target.value)}
+                                      className="input"
+                                      disabled={!field.key}
+                                    >
+                                      <option value="">未设置</option>
+                                      <option value="true">true</option>
+                                      <option value="false">false</option>
+                                    </select>
+                                  ) : (
+                                    <input
+                                      type={field.valueType === 'INTEGER' ? 'number' : 'text'}
+                                      value={group.config?.[field.key] ?? field.defaultValue ?? ''}
+                                      onChange={(event) => updateGroupConfigValue(index, field.key, event.target.value)}
+                                      className="input"
+                                      placeholder={field.description || `填写 ${field.label || field.key || '配置值'}`}
+                                      disabled={!field.key}
+                                    />
+                                  )}
+                                  {field.description ? (
+                                    <p className="mt-2 text-xs leading-6 text-slate-500">{field.description}</p>
+                                  ) : null}
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="mt-4 rounded-xl bg-white px-4 py-3 text-sm text-slate-500">
+                              当前没有定义独立配置字段，可直接在实验返回结果中查看自由结构配置。
+                            </div>
+                          )
+                        ) : null}
+                      </div>
+                    )
+                  })}
                 </div>
               </div>
 

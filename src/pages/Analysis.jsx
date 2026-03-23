@@ -25,7 +25,7 @@ import {
   YAxis
 } from 'recharts'
 import { analysisAPI, experimentAPI } from '../services/api'
-import { buildTimelineChartData } from '../utils/analysisTransformers'
+import { buildGroupChartData, buildTimelineChartData } from '../utils/analysisTransformers'
 import { buildDecisionWorkspaceModel } from '../utils/aiDecisionTransformers'
 import { resolvePrimaryMetricDefinition } from '../utils/experimentDetailUtils'
 
@@ -51,28 +51,6 @@ const getGuardrailClassName = (status) => {
   return 'border-blue-200 bg-blue-50 text-[var(--brand)]'
 }
 
-const formatMetricChartValue = (value, aggregationType) => {
-  const numericValue = Number(value || 0)
-  if (aggregationType === 'RATE') {
-    return Number((numericValue * 100).toFixed(2))
-  }
-  return Number(numericValue.toFixed(2))
-}
-
-const buildGroupChartData = (statistics, primaryMetricDefinition) => {
-  const primaryMetricKey = primaryMetricDefinition?.key
-  const aggregationType = primaryMetricDefinition?.aggregationType
-
-  return Object.values(statistics?.groupStatistics || {}).map(group => ({
-    group: group.groupName || group.groupId,
-    primaryMetric: primaryMetricKey
-      ? formatMetricChartValue(group.metricValues?.[primaryMetricKey], aggregationType)
-      : Number(((group.conversionRate || 0) * 100).toFixed(2)),
-    liftRate: Number(((group.liftRate || 0) * 100).toFixed(2)),
-    visitors: group.userCount || 0
-  }))
-}
-
 export default function Analysis() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -80,6 +58,7 @@ export default function Analysis() {
   const [statistics, setStatistics] = useState(null)
   const [diagnosis, setDiagnosis] = useState(null)
   const [graduation, setGraduation] = useState(null)
+  const [comparison, setComparison] = useState(null)
   const [timeline, setTimeline] = useState(null)
   const [loading, setLoading] = useState(true)
   const [exporting, setExporting] = useState(false)
@@ -91,11 +70,12 @@ export default function Analysis() {
   const loadData = async () => {
     try {
       setLoading(true)
-      const [experimentRes, statisticsRes, diagnosisRes, graduationRes] = await Promise.allSettled([
+      const [experimentRes, statisticsRes, diagnosisRes, graduationRes, comparisonRes] = await Promise.allSettled([
         experimentAPI.get(id),
         analysisAPI.getStatistics(id),
         analysisAPI.getAIDiagnosis(id),
-        analysisAPI.getAIGraduationDecision(id)
+        analysisAPI.getAIGraduationDecision(id),
+        analysisAPI.compareGroups(id)
       ])
 
       const experimentData = experimentRes.status === 'fulfilled' ? (experimentRes.value.data || experimentRes.value) : null
@@ -111,6 +91,7 @@ export default function Analysis() {
       setStatistics(statisticsData)
       setDiagnosis(diagnosisRes.status === 'fulfilled' ? (diagnosisRes.value.data || diagnosisRes.value) : null)
       setGraduation(graduationRes.status === 'fulfilled' ? (graduationRes.value.data || graduationRes.value) : null)
+      setComparison(comparisonRes.status === 'fulfilled' ? (comparisonRes.value.data || comparisonRes.value) : null)
       setTimeline(timelineRes[0].status === 'fulfilled' ? (timelineRes[0].value.data || timelineRes[0].value) : null)
     } catch (error) {
       console.error('Failed to load decision workspace:', error)
@@ -118,6 +99,7 @@ export default function Analysis() {
       setStatistics(null)
       setDiagnosis(null)
       setGraduation(null)
+      setComparison(null)
       setTimeline(null)
     } finally {
       setLoading(false)
@@ -133,8 +115,8 @@ export default function Analysis() {
     [experiment, statistics?.summary]
   )
   const groupChartData = useMemo(
-    () => buildGroupChartData(statistics, primaryMetricDefinition),
-    [statistics, primaryMetricDefinition]
+    () => buildGroupChartData(statistics, primaryMetricDefinition, comparison),
+    [statistics, primaryMetricDefinition, comparison]
   )
   const timelineData = useMemo(
     () => buildTimelineChartData({
@@ -353,7 +335,19 @@ export default function Analysis() {
                   <BarChart data={groupChartData}>
                     <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
                     <XAxis dataKey="group" stroke="#94a3b8" tickLine={false} axisLine={false} />
-                    <YAxis stroke="#94a3b8" tickLine={false} axisLine={false} />
+                    <YAxis
+                      yAxisId="primaryMetric"
+                      stroke="#94a3b8"
+                      tickLine={false}
+                      axisLine={false}
+                    />
+                    <YAxis
+                      yAxisId="liftRate"
+                      orientation="right"
+                      stroke="#4cc9f0"
+                      tickLine={false}
+                      axisLine={false}
+                    />
                     <Tooltip
                       contentStyle={{
                         background: '#ffffff',
@@ -363,12 +357,20 @@ export default function Analysis() {
                     />
                     <Legend />
                     <Bar
+                      yAxisId="primaryMetric"
                       dataKey="primaryMetric"
                       name={isPrimaryMetricRate ? `${primaryMetricLabel} %` : primaryMetricLabel}
                       fill="#ff8b5d"
                       radius={[8, 8, 0, 0]}
                     />
-                    <Bar dataKey="liftRate" name="提升率 %" fill="#4cc9f0" radius={[8, 8, 0, 0]} />
+                    <Bar
+                      yAxisId="liftRate"
+                      dataKey="liftRate"
+                      name="提升率 %"
+                      fill="#4cc9f0"
+                      radius={[8, 8, 0, 0]}
+                      minPointSize={6}
+                    />
                   </BarChart>
                 </ResponsiveContainer>
               </div>

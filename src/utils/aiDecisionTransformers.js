@@ -295,9 +295,14 @@ const buildDemoExperimentCard = (key, title, tone, summary, experiment) => {
     title,
     experimentId: experiment.experimentId,
     experimentName: experiment.experimentName || '示例实验',
-    summary,
+    summary: experiment.aiSummary || summary,
     canGraduate: Boolean(experiment.canGraduate),
     canStop: Boolean(experiment.canStop),
+    aiDecision: experiment.aiDecision || 'UNKNOWN',
+    aiGuardrailStatus: experiment.aiGuardrailStatus || 'UNKNOWN',
+    primaryMetricKey: experiment.primaryMetricKey || '-',
+    groupCount: normalizeNumber(experiment.groupCount),
+    schemaFieldCount: normalizeNumber(experiment.schemaFieldCount),
     baselineConversionRate: normalizeNumber(experiment.baselineConversionRate),
     winningConversionRate: normalizeNumber(experiment.winningConversionRate)
   }

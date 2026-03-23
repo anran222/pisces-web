@@ -46,3 +46,33 @@ export function buildTimelineChartData(timeline) {
     }
   })
 }
+
+function formatMetricChartValue(value, aggregationType) {
+  const numericValue = Number(value || 0)
+  if (aggregationType === 'RATE') {
+    return Number((numericValue * 100).toFixed(2))
+  }
+  return Number(numericValue.toFixed(2))
+}
+
+function resolveLiftRate(group, comparisonEntry) {
+  if (comparisonEntry && comparisonEntry.conversionRateChangePercent !== undefined && comparisonEntry.conversionRateChangePercent !== null) {
+    return Number(Number(comparisonEntry.conversionRateChangePercent).toFixed(2))
+  }
+  return Number(((group?.liftRate || 0) * 100).toFixed(2))
+}
+
+export function buildGroupChartData(statistics, primaryMetricDefinition, comparison) {
+  const primaryMetricKey = primaryMetricDefinition?.key
+  const aggregationType = primaryMetricDefinition?.aggregationType
+  const comparisons = comparison?.comparisons || {}
+
+  return Object.values(statistics?.groupStatistics || {}).map(group => ({
+    group: group.groupName || group.groupId,
+    primaryMetric: primaryMetricKey
+      ? formatMetricChartValue(group.metricValues?.[primaryMetricKey], aggregationType)
+      : Number(((group.conversionRate || 0) * 100).toFixed(2)),
+    liftRate: resolveLiftRate(group, comparisons[group.groupId]),
+    visitors: group.userCount || 0
+  }))
+}

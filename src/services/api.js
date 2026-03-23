@@ -181,23 +181,12 @@ export const analysisAPI = {
       params: { metricType, granularity }
     }),
   
-  // 因果推断
+  // 因果推断（仅支持 DID / PSM）
   causalInference: (experimentId, method, treatmentGroupId, controlGroupId, params) =>
     api.post(`/analysis/experiment/${experimentId}/causal-inference`, params, {
       params: { method, treatmentGroupId, controlGroupId }
     }),
   
-  // HTE分析
-  analyzeHTE: (experimentId, treatmentGroupId, controlGroupId, userFeatures) =>
-    api.post(`/analysis/experiment/${experimentId}/hte`, userFeatures, {
-      params: { treatmentGroupId, controlGroupId }
-    }),
-  
-  // 敏感群体识别
-  identifySensitiveGroups: (experimentId, treatmentGroupId, controlGroupId, userFeatures) =>
-    api.post(`/analysis/experiment/${experimentId}/sensitive-groups`, userFeatures, {
-      params: { treatmentGroupId, controlGroupId }
-    }),
   
   // AI实验设计建议 v2
   designExperiment: (payload) =>
