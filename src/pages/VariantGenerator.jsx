@@ -107,7 +107,7 @@ export default function VariantGenerator() {
       <section className="decision-hero">
         <div className="max-w-3xl">
           <div className="eyebrow mb-4">Variant Lab</div>
-          <h1 className="page-title">统一候选生成，不再保留旧图片工具箱</h1>
+          <h1 className="page-title">统一候选生成</h1>
           <p className="page-subtitle mt-4">
             这里只服务于实验候选生产。你给出明确目标、受众和约束，系统按 `TEXT` 或 `IMAGE` 统一生成候选。
           </p>
