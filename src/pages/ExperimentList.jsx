@@ -12,11 +12,14 @@ import {
   MoreVertical,
   BarChart3,
   Eye,
+  PanelRightOpen,
   CheckSquare,
   Square as SquareIcon,
+  Filter,
   X
 } from 'lucide-react'
-import { experimentAPI } from '../services/api'
+import { applicationAPI, experimentAPI } from '../services/api'
+import { filterExperimentsBySearch } from '../utils/experimentFilters'
 import { getActionMenuPlacement } from '../utils/experimentListUtils'
 import clsx from 'clsx'
 
@@ -56,27 +59,51 @@ export default function ExperimentList() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('all')
+  const [appIdInput, setAppIdInput] = useState('')
+  const [ownerInput, setOwnerInput] = useState('')
+  const [appIdFilter, setAppIdFilter] = useState('')
+  const [ownerFilter, setOwnerFilter] = useState('')
+  const [applicationSpaces, setApplicationSpaces] = useState([])
   const [openMenu, setOpenMenu] = useState(null)
   const [selectedIds, setSelectedIds] = useState([])
   const [batchLoading, setBatchLoading] = useState(false)
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const [previewExperiment, setPreviewExperiment] = useState(null)
   const navigate = useNavigate()
 
   useEffect(() => {
     loadExperiments()
-  }, [filter])
+  }, [filter, appIdFilter, ownerFilter])
+
+  useEffect(() => {
+    loadApplicationSpaces()
+  }, [])
 
   const loadExperiments = async () => {
     try {
       setLoading(true)
       // 使用后端API进行状态筛选
       const status = filter === 'all' ? null : filter
-      const response = await experimentAPI.list(status)
+      const response = await experimentAPI.list({
+        status,
+        appId: appIdFilter,
+        owner: ownerFilter
+      })
       setExperiments(response.data || [])
       setSelectedIds([]) // 清空选择
     } catch (error) {
       console.error('Failed to load experiments:', error)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadApplicationSpaces = async () => {
+    try {
+      const response = await applicationAPI.list()
+      setApplicationSpaces(response.data || [])
+    } catch (error) {
+      console.warn('Failed to load application spaces:', error)
     }
   }
 
@@ -181,12 +208,35 @@ export default function ExperimentList() {
     }
   }
 
-  const filteredExperiments = experiments.filter(exp => {
-    const matchesSearch = exp.name?.toLowerCase().includes(search.toLowerCase()) ||
-                          exp.id?.toLowerCase().includes(search.toLowerCase())
+  const filteredExperiments = filterExperimentsBySearch(experiments, search).filter(exp => {
     const matchesFilter = filter === 'all' || exp.status === filter
-    return matchesSearch && matchesFilter
+    return matchesFilter
   })
+
+  const hasActiveFilters = Boolean(search || filter !== 'all' || appIdFilter || ownerFilter)
+  const hasPendingScopeFilters = appIdInput.trim() !== appIdFilter || ownerInput.trim() !== ownerFilter
+
+  const applyScopeFilters = () => {
+    setAppIdFilter(appIdInput.trim())
+    setOwnerFilter(ownerInput.trim())
+    setFiltersOpen(false)
+  }
+
+  const handleScopeFilterKeyDown = (event) => {
+    if (event.key === 'Enter') {
+      applyScopeFilters()
+    }
+  }
+
+  const clearFilters = () => {
+    setSearch('')
+    setFilter('all')
+    setAppIdInput('')
+    setOwnerInput('')
+    setAppIdFilter('')
+    setOwnerFilter('')
+    setFiltersOpen(false)
+  }
 
   const getAvailableActions = (status) => {
     switch (status) {
@@ -229,6 +279,15 @@ export default function ExperimentList() {
   }
 
   const selectedStats = getSelectedStatusStats()
+  const activeFilterCount = [
+    search,
+    filter !== 'all' ? filter : '',
+    appIdFilter,
+    ownerFilter
+  ].filter(Boolean).length
+  const previewGroups = previewExperiment?.groups
+    ? Object.entries(previewExperiment.groups)
+    : []
 
   return (
     <div className="space-y-6">
@@ -311,41 +370,87 @@ export default function ExperimentList() {
         </div>
       )}
 
-      {/* Filters */}
-      <div className="glass-card flex flex-col gap-4 p-4 sm:flex-row">
-        <div className="relative flex-1">
-          <div className="pointer-events-none absolute left-3 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg bg-slate-100 text-slate-400">
-            <Search size={16} />
+      <div className="glass-card p-3">
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+          <div className="relative">
+            <div className="pointer-events-none absolute left-3 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg bg-slate-100 text-slate-400">
+              <Search size={16} />
+            </div>
+            <input
+              type="text"
+              placeholder="搜索实验、应用或负责人"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="input h-11 pr-4"
+              style={{ paddingLeft: '3rem' }}
+            />
           </div>
-          <input
-            type="text"
-            placeholder="搜索实验..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="input h-11 pr-4"
-            style={{ paddingLeft: '3rem' }}
-          />
-        </div>
-        <div className="flex gap-2">
-          {['all', 'RUNNING', 'DRAFT', 'PAUSED', 'STOPPED'].map(status => (
+          <div className="flex flex-wrap items-center gap-2">
+            {['all', 'RUNNING', 'DRAFT', 'PAUSED', 'STOPPED'].map(status => (
+              <button
+                key={status}
+                onClick={() => setFilter(status)}
+                className={clsx(
+                  'rounded-lg px-3 py-2 text-sm font-medium transition-all',
+                  filter === status
+                    ? 'border border-blue-200 bg-blue-50 text-[var(--brand)]'
+                    : 'border border-transparent text-slate-500 hover:bg-slate-100 hover:text-slate-900'
+                )}
+              >
+                {status === 'all' ? '全部' : statusConfig[status]?.text}
+              </button>
+            ))}
             <button
-              key={status}
-              onClick={() => setFilter(status)}
-              className={clsx(
-                'px-4 py-2 rounded-lg text-sm font-medium transition-all',
-                filter === status
-                  ? 'border border-blue-200 bg-blue-50 text-[var(--brand)]'
-                  : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'
-              )}
+              type="button"
+              onClick={() => setFiltersOpen(true)}
+              className="btn-secondary h-11 px-3"
+              title="打开应用和负责人筛选"
             >
-              {status === 'all' ? '全部' : statusConfig[status]?.text}
+              <Filter size={16} />
+              高级筛选
+              {activeFilterCount > 0 ? (
+                <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs text-[var(--brand)]">
+                  {activeFilterCount}
+                </span>
+              ) : null}
             </button>
-          ))}
+            <button
+              onClick={clearFilters}
+              disabled={!hasActiveFilters && !appIdInput && !ownerInput}
+              className="btn-secondary h-11 px-3 disabled:cursor-not-allowed disabled:opacity-50"
+              title="清空筛选"
+            >
+              <X size={16} />
+            </button>
+          </div>
         </div>
+        <datalist id="application-space-options">
+          {applicationSpaces.map(space => (
+            <option
+              key={space.appId}
+              value={space.appId}
+              label={`${space.displayName || space.appId} · ${space.experimentCount || 0} 实验`}
+            />
+          ))}
+        </datalist>
+        {(appIdFilter || ownerFilter) && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+            {appIdFilter && (
+              <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-[var(--brand)]">
+                appId: {appIdFilter}
+              </span>
+            )}
+            {ownerFilter && (
+              <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-slate-600">
+                owner: {ownerFilter}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Experiment List */}
-      <div className="glass-card relative overflow-visible">
+      <div className="glass-card relative overflow-hidden">
         {loading ? (
           <div className="p-8 space-y-4">
             {[1, 2, 3].map(i => (
@@ -356,9 +461,9 @@ export default function ExperimentList() {
           <div className="text-center py-16">
             <FlaskConical size={48} className="mx-auto mb-4 text-slate-400" />
             <p className="mb-4 text-slate-500">
-              {search || filter !== 'all' ? '没有找到匹配的实验' : '还没有任何实验'}
+              {hasActiveFilters ? '没有找到匹配的实验' : '还没有任何实验'}
             </p>
-            {!search && filter === 'all' && (
+            {!hasActiveFilters && (
               <Link to="/ai-design" className="btn-primary inline-flex items-center gap-2">
                 <Plus size={18} />
                 新建实验
@@ -366,8 +471,8 @@ export default function ExperimentList() {
             )}
           </div>
         ) : (
-          <div className="overflow-hidden rounded-[1.55rem]">
-          <table className="w-full">
+          <div className="overflow-x-auto">
+          <table className="min-w-[1040px] w-full">
             <thead className="border-b border-slate-200 bg-slate-50/80">
               <tr>
                 <th className="w-12 p-4">
@@ -384,7 +489,9 @@ export default function ExperimentList() {
                 </th>
                 <th className="text-left p-4 text-slate-400 font-medium">实验名称</th>
                 <th className="text-left p-4 text-slate-400 font-medium hidden md:table-cell">状态</th>
-                <th className="text-left p-4 text-slate-400 font-medium hidden lg:table-cell">创建时间</th>
+                <th className="text-left p-4 text-slate-400 font-medium hidden lg:table-cell">应用 / 负责人</th>
+                <th className="text-left p-4 text-slate-400 font-medium hidden xl:table-cell">结论</th>
+                <th className="text-left p-4 text-slate-400 font-medium hidden 2xl:table-cell">创建时间</th>
                 <th className="text-right p-4 text-slate-400 font-medium">操作</th>
               </tr>
             </thead>
@@ -424,23 +531,6 @@ export default function ExperimentList() {
                         <div>
                           <p className="font-medium text-slate-900">{experiment.name}</p>
                           <p className="text-sm text-slate-500 font-mono">{experiment.id}</p>
-                          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                            <span className="rounded-full border border-slate-200 bg-white px-2 py-1 text-slate-600">
-                              结论状态: {getConclusionLabel(experiment.conclusionStatus)}
-                            </span>
-                            {experiment.suggestedConclusionStatus && (
-                              <span className="rounded-full border border-blue-200 bg-blue-50 px-2 py-1 text-[var(--brand)]">
-                                建议: {getConclusionLabel(experiment.suggestedConclusionStatus)}
-                              </span>
-                            )}
-                          </div>
-                          {experiment.groups && Object.keys(experiment.groups).length > 0 && (
-                            <div className="mt-2 text-xs text-slate-500">
-                              参数摘要：{Object.entries(experiment.groups)
-                                .map(([groupId, group]) => `${group.name || groupId}(${summarizeGroupConfig(group.config)})`)
-                                .join('； ')}
-                            </div>
-                          )}
                         </div>
                       </div>
                     </td>
@@ -451,7 +541,21 @@ export default function ExperimentList() {
                         <span className="text-slate-500 text-sm">-</span>
                       )}
                     </td>
-                    <td className="p-4 hidden lg:table-cell text-slate-400 text-sm">
+                    <td className="p-4 hidden lg:table-cell text-sm">
+                      <p className="font-medium text-slate-900">{experiment.appId || '-'}</p>
+                      <p className="mt-1 text-slate-500">{experiment.owner || '-'}</p>
+                    </td>
+                    <td className="p-4 hidden xl:table-cell text-sm">
+                      <span className="rounded-full border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600">
+                        {getConclusionLabel(experiment.conclusionStatus)}
+                      </span>
+                      {experiment.suggestedConclusionStatus && (
+                        <p className="mt-2 text-xs text-[var(--brand)]">
+                          建议 {getConclusionLabel(experiment.suggestedConclusionStatus)}
+                        </p>
+                      )}
+                    </td>
+                    <td className="p-4 hidden 2xl:table-cell text-slate-400 text-sm">
                       {experiment.createTime ? new Date(experiment.createTime).toLocaleString() : '-'}
                     </td>
                     <td className="p-4">
@@ -462,6 +566,13 @@ export default function ExperimentList() {
                           title="查看详情"
                         >
                           <Eye size={18} />
+                        </button>
+                        <button
+                          onClick={() => setPreviewExperiment(experiment)}
+                          className="p-2 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-colors"
+                          title="查看配置摘要"
+                        >
+                          <PanelRightOpen size={18} />
                         </button>
                         <button
                           onClick={() => navigate(`/experiments/${experiment.id}/decision`)}
@@ -518,6 +629,164 @@ export default function ExperimentList() {
           </div>
         )}
       </div>
+
+      {filtersOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/30 px-4 py-8">
+          <div className="absolute inset-0" onClick={() => setFiltersOpen(false)} />
+          <div className="relative w-full max-w-2xl rounded-[1.4rem] border border-slate-200 bg-white p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="signal-label">Filters</p>
+                <h2 className="section-title mt-2">高级筛选</h2>
+              </div>
+              <button
+                type="button"
+                className="rounded-xl border border-slate-200 bg-white p-2 text-slate-500 hover:bg-slate-50"
+                onClick={() => setFiltersOpen(false)}
+                title="关闭"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="mt-5 grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-600">应用 ID</label>
+                <input
+                  type="text"
+                  list="application-space-options"
+                  placeholder="例如 growth-shop"
+                  value={appIdInput}
+                  onChange={(e) => setAppIdInput(e.target.value)}
+                  onKeyDown={handleScopeFilterKeyDown}
+                  className="input h-11 px-4"
+                />
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-600">负责人</label>
+                <input
+                  type="text"
+                  placeholder="例如 growth-ops"
+                  value={ownerInput}
+                  onChange={(e) => setOwnerInput(e.target.value)}
+                  onKeyDown={handleScopeFilterKeyDown}
+                  className="input h-11 px-4"
+                />
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                onClick={clearFilters}
+                disabled={!hasActiveFilters && !appIdInput && !ownerInput}
+                className="btn-secondary disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <X size={16} />
+                清空
+              </button>
+              <button
+                onClick={applyScopeFilters}
+                disabled={!hasPendingScopeFilters}
+                className="btn-primary disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Filter size={16} />
+                应用筛选
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {previewExperiment && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/30 px-4 py-8">
+          <div className="absolute inset-0" onClick={() => setPreviewExperiment(null)} />
+          <div className="relative w-full max-w-4xl overflow-hidden rounded-[1.4rem] border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+              <div className="min-w-0">
+                <p className="signal-label">Experiment Summary</p>
+                <h2 className="mt-2 truncate text-lg font-bold text-slate-900">{previewExperiment.name}</h2>
+                <p className="mt-1 font-mono text-xs text-slate-500">{previewExperiment.id}</p>
+              </div>
+              <button
+                type="button"
+                className="rounded-xl border border-slate-200 bg-white p-2 text-slate-500 hover:bg-slate-50"
+                onClick={() => setPreviewExperiment(null)}
+                title="关闭"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="p-5">
+              <div className="grid gap-3 md:grid-cols-4">
+                <div className="rounded-xl bg-slate-50 px-4 py-3">
+                  <p className="text-xs text-slate-500">状态</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-900">
+                    {statusConfig[previewExperiment.status]?.text || previewExperiment.status || '-'}
+                  </p>
+                </div>
+                <div className="rounded-xl bg-slate-50 px-4 py-3">
+                  <p className="text-xs text-slate-500">应用</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-900">{previewExperiment.appId || '-'}</p>
+                </div>
+                <div className="rounded-xl bg-slate-50 px-4 py-3">
+                  <p className="text-xs text-slate-500">负责人</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-900">{previewExperiment.owner || '-'}</p>
+                </div>
+                <div className="rounded-xl bg-slate-50 px-4 py-3">
+                  <p className="text-xs text-slate-500">配置版本</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-900">v{previewExperiment.configVersion || '-'}</p>
+                </div>
+              </div>
+              <div className="mt-4 max-h-[48vh] overflow-y-auto rounded-2xl border border-slate-200">
+                <table className="min-w-[720px] w-full text-left text-sm">
+                  <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                    <tr>
+                      <th className="px-4 py-3">实验组</th>
+                      <th className="px-4 py-3">流量</th>
+                      <th className="px-4 py-3">配置摘要</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {previewGroups.length === 0 ? (
+                      <tr>
+                        <td className="px-4 py-5 text-slate-500" colSpan={3}>当前实验没有分组配置。</td>
+                      </tr>
+                    ) : (
+                      previewGroups.map(([groupId, group]) => (
+                        <tr key={groupId}>
+                          <td className="px-4 py-3">
+                            <p className="font-semibold text-slate-900">{group.name || groupId}</p>
+                            <p className="mt-1 font-mono text-xs text-slate-500">{group.id || groupId}</p>
+                          </td>
+                          <td className="px-4 py-3 font-semibold text-slate-900">
+                            {Math.round(Number(group.trafficRatio || 0) * 100)}%
+                          </td>
+                          <td className="px-4 py-3 text-slate-600">{summarizeGroupConfig(group.config)}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => setPreviewExperiment(null)}
+                >
+                  关闭
+                </button>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={() => navigate(`/experiments/${previewExperiment.id}`)}
+                >
+                  <Eye size={16} />
+                  打开详情
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

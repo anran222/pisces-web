@@ -18,7 +18,9 @@ import {
   METRIC_AGGREGATION_TYPE_OPTIONS,
   METRIC_DENOMINATOR_TYPES,
   METRIC_DENOMINATOR_TYPE_OPTIONS,
-  buildVariantCandidatePayload
+  buildVariantCandidatePayload,
+  normalizeVariantCandidates,
+  normalizeVariantGenerationModelEvidence
 } from './aiDecisionTransformers.js'
 
 test('buildDecisionWorkspaceModel summarizes diagnosis and graduation signals', () => {
@@ -85,6 +87,45 @@ test('buildDecisionWorkspaceModel normalizes enum confidence into numeric score'
   assert.equal(model.hero.confidence, 0.6)
 })
 
+test('buildDecisionWorkspaceModel exposes the sample-size gate before AI evidence arrives', () => {
+  const model = buildDecisionWorkspaceModel({
+    statistics: {
+      summary: {
+        totalVisitors: 1600,
+        bestPerformingGroup: 'trust_value'
+      },
+      dataQualityCheck: {
+        analysisReady: false,
+        blockingIssues: ['当前每组样本量未达到最小要求']
+      }
+    }
+  })
+
+  assert.equal(model.hero.decision, 'CONTINUE')
+  assert.equal(model.hero.guardrailStatus, 'BLOCKED')
+  assert.equal(model.hero.summary, '分析尚未就绪，继续运行并累计样本。')
+  assert.equal(model.hero.totalVisitors, 1600)
+  assert.equal(model.hero.confidence, null)
+  assert.deepEqual(model.riskFlags, ['当前每组样本量未达到最小要求'])
+})
+
+test('buildDecisionWorkspaceModel exposes passing quality checks before AI evidence arrives', () => {
+  const model = buildDecisionWorkspaceModel({
+    statistics: {
+      summary: {
+        breachedGuardrails: []
+      },
+      dataQualityCheck: {
+        analysisReady: true,
+        blockingIssues: []
+      }
+    }
+  })
+
+  assert.equal(model.hero.guardrailStatus, 'PASS')
+  assert.deepEqual(model.riskFlags, [])
+})
+
 test('buildExperimentCreatePayload maps ai draft into backend create request shape', () => {
   const payload = buildExperimentCreatePayload({
     experimentDraft: {
@@ -126,6 +167,7 @@ test('buildDefaultExperimentCreatePayload creates editable manual draft', () => 
 
   assert.equal(payload.name, '')
   assert.equal(payload.description, '')
+  assert.equal(payload.layerId, '')
   assert.equal(payload.startTime, '2026-03-21T10:30')
   assert.equal(payload.endTime, '2026-03-28T10:30')
   assert.deepEqual(payload.groupConfigSchema, [])
@@ -140,6 +182,7 @@ test('buildExperimentDraftFromResponse maps experiment response into editable dr
   const payload = buildExperimentDraftFromResponse({
     name: '二手手机实验',
     description: '详情页编辑草稿',
+    layerId: 'detail-page',
     startTime: '2026-03-21T10:30:00',
     endTime: '2026-03-28T10:30:00',
     eventDefinitions: [
@@ -176,6 +219,7 @@ test('buildExperimentDraftFromResponse maps experiment response into editable dr
   })
 
   assert.equal(payload.name, '二手手机实验')
+  assert.equal(payload.layerId, 'detail-page')
   assert.equal(payload.startTime, '2026-03-21T10:30')
   assert.equal(payload.eventDefinitions[0].key, 'PRODUCT_VIEW')
   assert.equal(payload.metricDefinitions[0].key, 'PAYMENT_RATE')
@@ -402,6 +446,100 @@ test('buildVariantCandidatePayload adds real reference image only when provided'
       imageBase64: 'data:image/png;base64,ZmFrZS1pbWFnZQ=='
     }
   })
+})
+
+test('normalizeVariantCandidates keeps string candidates renderable', () => {
+  const candidates = normalizeVariantCandidates({
+    variants: ['放心下单', '价格透明']
+  }, 'TEXT')
+
+  assert.deepEqual(candidates, [
+    { id: 'candidate-0', text: '放心下单', imageUrl: '' },
+    { id: 'candidate-1', text: '价格透明', imageUrl: '' }
+  ])
+})
+
+test('normalizeVariantCandidates maps object candidates into text', () => {
+  const candidates = normalizeVariantCandidates({
+    variants: [
+      {
+        variantId: 'v1',
+        title: '放心下单',
+        content: '质检保障看得见',
+        rationale: '降低支付前疑虑'
+      }
+    ]
+  }, 'TEXT')
+
+  assert.deepEqual(candidates, [
+    {
+      id: 'v1',
+      text: '放心下单\n质检保障看得见\n降低支付前疑虑',
+      imageUrl: ''
+    }
+  ])
+})
+
+test('normalizeVariantCandidates maps image candidate objects', () => {
+  const candidates = normalizeVariantCandidates({
+    variants: [
+      {
+        id: 'image-a',
+        imageUrl: 'https://example.com/candidate.png',
+        title: '保障主图'
+      }
+    ]
+  }, 'IMAGE')
+
+  assert.deepEqual(candidates, [
+    {
+      id: 'image-a',
+      text: '保障主图',
+      imageUrl: 'https://example.com/candidate.png'
+    }
+  ])
+})
+
+test('normalizeVariantGenerationModelEvidence maps production TongYi model metadata', () => {
+  const evidence = normalizeVariantGenerationModelEvidence({
+    aiProvider: 'tongyi',
+    aiPrimaryModel: 'qwen3.7-max',
+    aiModel: 'qwen3.7-max',
+    aiApiMode: 'dashscope',
+    aiFallbackUsed: false,
+    aiFallbackModel: 'qwen3.7-max',
+    aiAttemptedModels: ['qwen3.7-max'],
+    aiModelStrategy: 'production-dashscope-qwen3.7-max-with-token-plan-preview-opt-in'
+  })
+
+  assert.deepEqual(evidence, {
+    provider: 'tongyi',
+    selectedModel: 'qwen3.7-max',
+    selectedApiMode: 'dashscope',
+    primaryModel: 'qwen3.7-max',
+    fallbackModel: 'qwen3.7-max',
+    fallbackUsed: false,
+    attemptedModels: ['qwen3.7-max'],
+    attemptedModelLabel: 'qwen3.7-max',
+    modelStrategy: 'production-dashscope-qwen3.7-max-with-token-plan-preview-opt-in',
+    statusLabel: '生产模型'
+  })
+})
+
+test('normalizeVariantGenerationModelEvidence maps fallback metadata compactly', () => {
+  const evidence = normalizeVariantGenerationModelEvidence({
+    aiModel: 'qwen3.7-max',
+    aiApiMode: 'dashscope',
+    aiFallbackUsed: true,
+    aiAttemptedModels: ['qwen3.8-max-preview', 'qwen3.7-max']
+  })
+
+  assert.equal(evidence.provider, 'tongyi')
+  assert.equal(evidence.selectedModel, 'qwen3.7-max')
+  assert.equal(evidence.selectedApiMode, 'dashscope')
+  assert.equal(evidence.fallbackUsed, true)
+  assert.equal(evidence.statusLabel, '已回退')
+  assert.equal(evidence.attemptedModelLabel, 'qwen3.8-max-preview -> qwen3.7-max')
 })
 
 test('buildDemoExperimentCards maps qualified and unqualified demo experiments into user-facing cards', () => {

@@ -31,10 +31,12 @@ export default function DemoExperimentPanel({
   description = '一键生成两组示例实验，方便直接查看详情和分析结果。',
   buttonLabel = '生成示例实验',
   compact = false,
+  embedded = false,
   onGenerated
 }) {
   const [loading, setLoading] = useState(false)
   const [cards, setCards] = useState([])
+  const PanelShell = embedded ? 'div' : 'section'
 
   const handleGenerate = async () => {
     try {
@@ -54,7 +56,7 @@ export default function DemoExperimentPanel({
   }
 
   return (
-    <section className="glass-card p-5">
+    <PanelShell className={embedded ? '' : 'glass-card p-5'}>
       <div className={`flex gap-4 ${compact ? 'flex-col lg:flex-row lg:items-center lg:justify-between' : 'flex-col xl:flex-row xl:items-start xl:justify-between'}`}>
         <div className="max-w-2xl">
           <div className="eyebrow mb-3">Demo</div>
@@ -139,6 +141,6 @@ export default function DemoExperimentPanel({
           })}
         </div>
       )}
-    </section>
+    </PanelShell>
   )
 }

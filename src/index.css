@@ -342,6 +342,10 @@ a {
   resize: vertical;
 }
 
+.textarea-compact {
+  min-height: 84px;
+}
+
 @keyframes shimmer {
   0% {
     background-position: -200% 0;

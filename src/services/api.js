@@ -1,10 +1,14 @@
 import axios from 'axios'
+import { buildExperimentListParams } from '../utils/experimentFilters'
+
+const piscesApiKey = import.meta.env.VITE_PISCES_API_KEY
 
 const api = axios.create({
   baseURL: '/api',
   timeout: 300000, // 提升至5分钟，适配耗时接口
   headers: {
     'Content-Type': 'application/json',
+    ...(piscesApiKey ? { 'X-Pisces-Api-Key': piscesApiKey } : {}),
   }
 })
 
@@ -20,10 +24,11 @@ api.interceptors.response.use(
 // 实验管理 API
 export const experimentAPI = {
   // 获取实验列表（可按状态筛选）
-  list: (status = null, statuses = null) => {
-    const params = {}
-    if (status) params.status = status
-    if (statuses) params.statuses = statuses
+  list: (statusOrFilters = null, statuses = null) => {
+    const filters = statusOrFilters && typeof statusOrFilters === 'object' && !Array.isArray(statusOrFilters)
+      ? statusOrFilters
+      : { status: statusOrFilters, statuses }
+    const params = buildExperimentListParams(filters)
     return api.get('/experiments', { params })
   },
   
@@ -32,6 +37,61 @@ export const experimentAPI = {
   
   // 获取实验详情
   get: (id) => api.get(`/experiments/${id}`),
+
+  // 查询实验审计日志
+  listAuditLogs: (id) => api.get(`/experiments/${id}/audit-logs`),
+
+  // 查询实验配置版本
+  listConfigVersions: (id) => api.get(`/experiments/${id}/config-versions`),
+
+  // 查询实验配置草稿
+  getConfigDraft: (id) => api.get(`/experiments/${id}/config-draft`),
+
+  // 查询实验配置草稿审批历史
+  listConfigDraftApprovals: (id) => api.get(`/experiments/${id}/config-draft/approvals`),
+
+  // 保存实验配置草稿
+  saveConfigDraft: (id, data, comment = '', operator = 'web-ui') =>
+    api.put(`/experiments/${id}/config-draft`, { ...data, comment, operator }),
+
+  // 发布实验配置草稿
+  publishConfigDraft: (id, comment = '', operator = 'web-ui') =>
+    api.post(`/experiments/${id}/config-draft/publish`, { comment, operator }),
+
+  // 发布当前实验配置
+  publishConfigVersion: (id, comment = '', operator = 'web-ui') =>
+    api.post(`/experiments/${id}/config-versions/publish`, { comment, operator }),
+
+  // 回滚实验配置版本
+  rollbackConfigVersion: (id, targetConfigVersion, comment = '', operator = 'web-ui') =>
+    api.post(`/experiments/${id}/config-versions/rollback`, { targetConfigVersion, comment, operator }),
+
+  // 查询实验审批任务
+  listApprovalTasks: (filters = {}) => api.get('/experiments/approval-tasks', { params: filters }),
+
+  // 扫描逾期审批并创建升级告警
+  scanApprovalEscalations: (filters = {}) =>
+    api.post('/experiments/approval-escalations/scan', null, { params: filters }),
+
+  // 查询审批升级告警投递状态
+  getApprovalEscalationStatus: (filters = {}) =>
+    api.get('/experiments/approval-escalations/status', { params: filters }),
+
+  // 批量重投审批升级告警死信
+  retryDeadApprovalEscalations: (filters = {}, operator = 'web-ui') =>
+    api.post('/experiments/approval-escalations/dead/retry', null, { params: { ...filters, operator } }),
+
+  // 查询审批升级告警
+  listApprovalEscalations: (filters = {}) =>
+    api.get('/experiments/approval-escalations', { params: filters }),
+
+  // 确认审批升级告警
+  acknowledgeApprovalEscalation: (escalationId, comment = '', operator = 'web-ui') =>
+    api.post(`/experiments/approval-escalations/${escalationId}/ack`, { comment, operator }),
+
+  // 重投单条审批升级告警死信
+  retryApprovalEscalationNotification: (escalationId, operator = 'web-ui') =>
+    api.post(`/experiments/approval-escalations/${escalationId}/notification/retry`, null, { params: { operator } }),
   
   // 创建实验
   create: (data) => api.post('/experiments', data),
@@ -40,8 +100,16 @@ export const experimentAPI = {
   update: (id, data) => api.put(`/experiments/${id}`, data),
 
   // 更新实验结论状态
-  updateConclusionStatus: (id, conclusionStatus, operator = 'web-ui') =>
-    api.post(`/experiments/${id}/conclusion-status`, { conclusionStatus, operator }),
+  updateConclusionStatus: (id, payloadOrStatus, operator = 'web-ui') => {
+    const payload = payloadOrStatus && typeof payloadOrStatus === 'object'
+      ? payloadOrStatus
+      : { conclusionStatus: payloadOrStatus, operator }
+    return api.post(`/experiments/${id}/conclusion-status`, payload)
+  },
+
+  // 更新实验审批状态
+  updateApprovalStatus: (id, approvalStatus, comment = '', operator = 'web-ui', options = {}) =>
+    api.post(`/experiments/${id}/approval-status`, { approvalStatus, comment, operator, ...options }),
   
   // 删除实验
   delete: (id) => api.delete(`/experiments/${id}`),
@@ -102,6 +170,18 @@ export const experimentAPI = {
   },
 }
 
+// 应用空间 API
+export const applicationAPI = {
+  // 查询当前 key 可见的应用空间
+  list: () => api.get('/applications'),
+
+  // 注册或更新应用空间治理信息
+  upsert: (appId, data) => api.put(`/applications/${appId}`, data),
+
+  // 查询应用级事件和指标字典
+  getDictionary: (appId) => api.get(`/applications/${appId}/dictionary`),
+}
+
 // 流量分配 API
 export const trafficAPI = {
   // 分配访客到实验组
@@ -114,7 +194,9 @@ export const trafficAPI = {
   
   // 获取MAB统计摘要
   getMABSummary: (experimentId) => 
-    api.get(`/traffic/experiment/${experimentId}/mab/summary`),
+    api.get(`/traffic/experiment/${experimentId}/mab/summary`, {
+      timeout: 10000
+    }),
   
   // 获取Beta参数
   getBetaParameters: (experimentId, groupId) => 
@@ -134,6 +216,54 @@ export const analysisAPI = {
   // 获取统计数据
   getStatistics: (experimentId) => 
     api.get(`/analysis/experiment/${experimentId}/statistics`),
+
+  // 获取事件管道状态
+  getEventPipelineStatus: (experimentId) =>
+    api.get(`/analysis/experiment/${experimentId}/event-pipeline`),
+
+  // 重试事件管道死信记录
+  retryDeadEvents: (experimentId, operator = 'web-ui') =>
+    api.post(`/analysis/experiment/${experimentId}/event-pipeline/dead/retry`, null, {
+      params: { operator }
+    }),
+
+  // 重放事实表并重建事件管道派生数据
+  replayEventPipeline: (experimentId, operator = 'web-ui') =>
+    api.post(`/analysis/experiment/${experimentId}/events/replay`, null, {
+      params: { operator }
+    }),
+
+  // 生成只读事件重放计划
+  planEventReplay: (experimentId, request = {}) =>
+    api.post(`/analysis/experiment/${experimentId}/events/replay/plan`, request),
+
+  // 按安全边界修复缺失派生物化账本
+  repairEventMaterialization: (experimentId, request = {}, operator = 'web-ui') =>
+    api.post(`/analysis/experiment/${experimentId}/events/replay/materialization/repair`, request, {
+      params: { operator }
+    }),
+
+  // 按重放计划分段修复缺失派生物化账本
+  repairEventMaterializationSegment: (experimentId, segmentIndex, request = {}, operator = 'web-ui') =>
+    api.post(`/analysis/experiment/${experimentId}/events/replay/materialization/repair/segments/${segmentIndex}`, request, {
+      params: { operator }
+    }),
+
+  // 查询事件管道重放任务
+  listEventReplayJobs: (experimentId, limit = 3) =>
+    api.get(`/analysis/experiment/${experimentId}/events/replay/jobs`, {
+      params: { limit }
+    }),
+
+  // 查询单个事件管道重放任务
+  getEventReplayJob: (experimentId, replayJobId) =>
+    api.get(`/analysis/experiment/${experimentId}/events/replay/jobs/${replayJobId}`),
+
+  // 取消运行中的事件管道重放任务
+  cancelEventReplayJob: (experimentId, replayJobId, operator = 'web-ui') =>
+    api.post(`/analysis/experiment/${experimentId}/events/replay/jobs/${replayJobId}/cancel`, null, {
+      params: { operator }
+    }),
   
   // 组间对比
   compareGroups: (experimentId) => 

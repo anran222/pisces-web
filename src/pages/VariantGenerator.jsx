@@ -7,12 +7,17 @@ import {
   Image as ImageIcon,
   Loader2,
   Sparkles,
+  Cpu,
   Type,
   Wand2
 } from 'lucide-react'
 import clsx from 'clsx'
 import { variantAPI } from '../services/api'
-import { buildVariantCandidatePayload } from '../utils/aiDecisionTransformers'
+import {
+  buildVariantCandidatePayload,
+  normalizeVariantCandidates,
+  normalizeVariantGenerationModelEvidence
+} from '../utils/aiDecisionTransformers'
 
 const MODES = [
   {
@@ -97,21 +102,23 @@ export default function VariantGenerator() {
     }
   }
 
-  const variants = result?.variants || []
+  const variants = normalizeVariantCandidates(result, form.variantType)
+  const modelEvidence = normalizeVariantGenerationModelEvidence(result)
+  const candidateCount = result ? (result.count || variants.length) : 0
   const referenceImagePreview = form.variantType === 'IMAGE'
     && form.referenceImageInput
     && (form.referenceImageInput.startsWith('http') || form.referenceImageInput.startsWith('data:image/'))
 
   return (
-    <div className="space-y-8">
-      <section className="decision-hero">
-        <div className="max-w-3xl">
-          <div className="eyebrow mb-4">Variant Lab</div>
-          <h1 className="page-title">统一候选生成</h1>
-          <p className="page-subtitle mt-4">
-            这里只服务于实验候选生产。你给出明确目标、受众和约束，系统按 `TEXT` 或 `IMAGE` 统一生成候选。
-          </p>
+    <div className="space-y-4">
+      <section className="flex flex-wrap items-end justify-between gap-4 rounded-[1.35rem] border border-slate-200 bg-white/85 px-5 py-4 shadow-[0_14px_32px_rgba(80,114,168,0.06)]">
+        <div>
+          <div className="eyebrow mb-2">Variant Lab</div>
+          <h1 className="text-2xl font-extrabold tracking-[-0.02em] text-slate-900">统一候选生成</h1>
         </div>
+        <p className="max-w-2xl text-sm leading-6 text-slate-500">
+          给出目标、受众和约束后，按 `TEXT` 或 `IMAGE` 生成可进入实验配置的候选。
+        </p>
       </section>
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-[0.86fr_1.14fr]">
@@ -146,11 +153,11 @@ export default function VariantGenerator() {
             ))}
           </div>
 
-          <div className="mt-6 space-y-5">
+          <div className="mt-5 space-y-4">
             <div>
               <label className="mb-2 block text-sm text-slate-300">生成目标</label>
               <textarea
-                className="textarea"
+                className="textarea textarea-compact"
                 value={form.goal}
                 onChange={(event) => setForm(current => ({ ...current, goal: event.target.value }))}
                 placeholder={form.variantType === 'TEXT'
@@ -170,7 +177,7 @@ export default function VariantGenerator() {
             <div>
               <label className="mb-2 block text-sm text-slate-300">约束条件</label>
               <textarea
-                className="textarea"
+                className="textarea textarea-compact"
                 value={form.constraintsText}
                 onChange={(event) => setForm(current => ({ ...current, constraintsText: event.target.value }))}
                 placeholder="每行一个约束"
@@ -179,7 +186,7 @@ export default function VariantGenerator() {
             <div>
               <label className="mb-2 block text-sm text-slate-300">已有上下文</label>
               <textarea
-                className="textarea"
+                className="textarea textarea-compact"
                 value={form.sourceContextText}
                 onChange={(event) => setForm(current => ({ ...current, sourceContextText: event.target.value }))}
                 placeholder="例如：现有文案偏保守，不能突出回收价透明和质检能力"
@@ -259,9 +266,16 @@ export default function VariantGenerator() {
               <p className="signal-label">Candidate Wall</p>
               <h2 className="section-title mt-2">候选输出</h2>
             </div>
-            {result?.count ? (
-              <span className="badge border border-blue-200 bg-blue-50 text-[var(--brand)]">{result.count} 个候选</span>
-            ) : null}
+            <div className="flex min-w-0 flex-wrap justify-end gap-2">
+              {modelEvidence ? (
+                <ModelEvidenceBar evidence={modelEvidence} />
+              ) : null}
+              {candidateCount ? (
+                <span className="badge border border-blue-200 bg-blue-50 text-[var(--brand)]">
+                  {candidateCount} 个候选
+                </span>
+              ) : null}
+            </div>
           </div>
 
           {!result ? (
@@ -271,15 +285,15 @@ export default function VariantGenerator() {
               <p className="mt-2 text-sm leading-7 text-slate-500">左侧填写指令并生成后，这里会展示可以直接进入实验配置的候选方案。</p>
             </div>
           ) : form.variantType === 'TEXT' ? (
-            <div className="space-y-4">
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
               {variants.map((variant, index) => (
-                <div key={variant + index} className="rounded-[1.5rem] border border-white/8 bg-white/[0.03] p-5">
+                <div key={variant.id} className="min-h-[7rem] rounded-[1.25rem] border border-white/8 bg-white/[0.03] p-4">
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <p className="signal-label">Candidate {index + 1}</p>
-                      <p className="mt-3 text-base leading-8 text-slate-700">{variant}</p>
+                      <p className="mt-3 whitespace-pre-line text-sm leading-7 text-slate-700">{variant.text}</p>
                     </div>
-                    <button onClick={() => copyToClipboard(variant, index)} className="btn-secondary px-3 py-2">
+                    <button onClick={() => copyToClipboard(variant.text, index)} className="btn-secondary px-3 py-2">
                       {copiedIndex === index ? <Check size={16} /> : <Copy size={16} />}
                     </button>
                   </div>
@@ -289,23 +303,23 @@ export default function VariantGenerator() {
           ) : (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               {variants.map((variant, index) => (
-                <div key={variant + index} className="rounded-[1.5rem] border border-white/8 bg-white/[0.03] p-4">
+                <div key={variant.id} className="rounded-[1.5rem] border border-white/8 bg-white/[0.03] p-4">
                   <div className="mb-3 flex items-center justify-between">
                     <p className="text-sm font-semibold text-slate-900">候选 {index + 1}</p>
                     <span className="text-xs text-slate-500">IMAGE</span>
                   </div>
-                  {String(variant).startsWith('http') ? (
+                  {variant.imageUrl.startsWith('http') || variant.imageUrl.startsWith('data:image/') ? (
                     <div className="flex min-h-[18rem] items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 p-3">
                       <img
-                        src={variant}
+                        src={variant.imageUrl}
                         alt={`candidate-${index + 1}`}
                         loading="lazy"
                         className="max-h-[32rem] w-full rounded-xl object-contain"
                       />
                     </div>
                   ) : (
-                    <div className="flex h-64 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 p-4 text-center text-sm leading-7 text-slate-500">
-                      {variant}
+                    <div className="flex h-64 items-center justify-center whitespace-pre-line rounded-2xl border border-slate-200 bg-slate-50 p-4 text-center text-sm leading-7 text-slate-500">
+                      {variant.text}
                     </div>
                   )}
                 </div>
@@ -314,6 +328,45 @@ export default function VariantGenerator() {
           )}
         </section>
       </div>
+    </div>
+  )
+}
+
+function ModelEvidenceBar({ evidence }) {
+  return (
+    <div
+      className="flex max-w-full flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50/80 px-3 py-1.5 text-xs text-slate-500"
+      title={[
+        evidence.modelStrategy,
+        evidence.primaryModel ? `primary: ${evidence.primaryModel}` : '',
+        evidence.fallbackModel ? `fallback: ${evidence.fallbackModel}` : '',
+        evidence.attemptedModelLabel ? `attempted: ${evidence.attemptedModelLabel}` : ''
+      ].filter(Boolean).join('\n')}
+    >
+      <span className="inline-flex min-w-0 items-center gap-1.5 font-semibold text-slate-900">
+        <Cpu size={14} />
+        <span className="max-w-[13rem] truncate">{evidence.selectedModel || '模型未返回'}</span>
+      </span>
+      {evidence.selectedApiMode ? (
+        <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 font-medium text-slate-600">
+          {evidence.selectedApiMode}
+        </span>
+      ) : null}
+      <span
+        className={clsx(
+          'rounded-full border px-2 py-0.5 font-semibold',
+          evidence.fallbackUsed
+            ? 'border-orange-200 bg-orange-50 text-orange-700'
+            : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+        )}
+      >
+        {evidence.statusLabel}
+      </span>
+      {evidence.attemptedModelLabel ? (
+        <span className="max-w-[16rem] truncate text-slate-500">
+          尝试 {evidence.attemptedModelLabel}
+        </span>
+      ) : null}
     </div>
   )
 }

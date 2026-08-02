@@ -7,28 +7,35 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test src/utils/*.test.js"
+    "test": "node --test src/utils/*.test.js",
+    "capture:core": "node scripts/capture-core-functions.cjs",
+    "audit:core-layout": "PISCES_WEB_LAYOUT_AUDIT_STRICT=true node scripts/capture-core-functions.cjs",
+    "audit:prod-high": "npm audit --omit=dev --audit-level=high"
   },
   "dependencies": {
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-router-dom": "^6.20.0",
+    "@react-buddy/ide-toolbox": "^2.5.0",
     "axios": "^1.6.2",
-    "recharts": "^2.10.3",
-    "echarts": "^5.4.3",
-    "echarts-for-react": "^3.0.2",
-    "lucide-react": "^0.294.0",
     "clsx": "^2.0.0",
+    "echarts": "^6.1.0",
+    "echarts-for-react": "^3.0.2",
+    "lucide-react": "^1.28.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "react-markdown": "^9.0.1",
-    "@react-buddy/ide-toolbox": "^2.4.0"
+    "react-router-dom": "^7.18.2",
+    "recharts": "^2.10.3"
   },
   "devDependencies": {
-    "@types/react": "^18.2.43",
-    "@types/react-dom": "^18.2.17",
-    "@vitejs/plugin-react": "^4.2.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
     "autoprefixer": "^10.4.16",
+    "playwright": "^1.62.1",
     "postcss": "^8.4.32",
     "tailwindcss": "^3.3.6",
-    "vite": "^5.0.8"
+    "vite": "^8.2.0"
+  },
+  "overrides": {
+    "react-router": "8.3.0"
   }
 }

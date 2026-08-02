@@ -88,6 +88,7 @@ export default function Dashboard() {
   const [experiments, setExperiments] = useState([])
   const [decisionRecords, setDecisionRecords] = useState({})
   const [loading, setLoading] = useState(true)
+  const [activeInsightPanel, setActiveInsightPanel] = useState('facts')
 
   useEffect(() => {
     loadData()
@@ -149,6 +150,11 @@ export default function Dashboard() {
 
   const topBlocked = decisionItems.filter(item => item.guardrailStatus === 'BLOCKED').slice(0, 3)
   const topGraduate = decisionItems.filter(item => item.decision === 'GRADUATE').slice(0, 3)
+  const insightTabs = [
+    { key: 'facts', label: '总体', count: metrics.total },
+    { key: 'blocked', label: '阻塞', count: topBlocked.length },
+    { key: 'graduate', label: '推进', count: topGraduate.length }
+  ]
 
   return (
     <div className="space-y-6">
@@ -230,7 +236,7 @@ export default function Dashboard() {
               <p className="mt-2 text-sm text-slate-500">可以直接新建实验或生成示例实验，再进入实验列表执行和查看结果。</p>
             </div>
           ) : (
-            <div className="space-y-4">
+            <div className="max-h-[52vh] space-y-4 overflow-y-auto pr-1">
               {decisionItems.slice(0, 6).map(item => (
                 <Link
                   key={item.id}
@@ -266,10 +272,34 @@ export default function Dashboard() {
           )}
         </div>
 
-        <div className="space-y-6">
-          <div className="glass-card p-6">
-            <p className="signal-label">System Facts</p>
+        <div className="glass-card p-6">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="signal-label">System Facts</p>
               <h2 className="section-title mt-2">实验总体情况</h2>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {insightTabs.map(tab => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  className={`rounded-full border px-3 py-2 text-xs font-semibold transition-colors ${
+                    activeInsightPanel === tab.key
+                      ? 'border-blue-200 bg-blue-50 text-[var(--brand)]'
+                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                  }`}
+                  onClick={() => setActiveInsightPanel(tab.key)}
+                >
+                  {tab.label}
+                  <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
+                    {tab.count}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {activeInsightPanel === 'facts' ? (
             <div className="mt-5 fact-grid md:grid-cols-2">
               <div className="fact-tile">
                 <p className="text-sm text-slate-500">总实验数</p>
@@ -290,55 +320,59 @@ export default function Dashboard() {
                 </p>
               </div>
             </div>
-          </div>
+          ) : null}
 
-          <div className="glass-card p-6">
-            <div className="mb-4 flex items-center gap-3">
-              <AlertTriangle className="text-[#b44f42]" size={18} />
-              <h3 className="section-title">需要优先处理</h3>
-            </div>
-            <div className="space-y-3">
-              {topBlocked.length === 0 ? (
-                <p className="text-sm leading-7 text-slate-500">当前没有需要优先处理的实验。</p>
-              ) : (
-                topBlocked.map(item => (
-                  <Link key={item.id} to={`/experiments/${item.id}/decision`} className="block rounded-2xl border border-[#e7c8c4] bg-[#fff7f5] p-4">
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <p className="font-semibold text-slate-900">{item.name}</p>
-                        <p className="mt-1 text-sm text-[#9a5a52]">{item.decisionSummary}</p>
+          {activeInsightPanel === 'blocked' ? (
+            <div className="mt-5">
+              <div className="mb-4 flex items-center gap-3">
+                <AlertTriangle className="text-[#b44f42]" size={18} />
+                <h3 className="section-title">需要优先处理</h3>
+              </div>
+              <div className="space-y-3">
+                {topBlocked.length === 0 ? (
+                  <p className="text-sm leading-7 text-slate-500">当前没有需要优先处理的实验。</p>
+                ) : (
+                  topBlocked.map(item => (
+                    <Link key={item.id} to={`/experiments/${item.id}/decision`} className="block rounded-2xl border border-[#e7c8c4] bg-[#fff7f5] p-4">
+                      <div className="flex items-center justify-between gap-4">
+                        <div>
+                          <p className="font-semibold text-slate-900">{item.name}</p>
+                          <p className="mt-1 text-sm text-[#9a5a52]">{item.decisionSummary}</p>
+                        </div>
+                        <ShieldAlert size={18} className="text-[#b44f42]" />
                       </div>
-                      <ShieldAlert size={18} className="text-[#b44f42]" />
-                    </div>
-                  </Link>
-                ))
-              )}
+                    </Link>
+                  ))
+                )}
+              </div>
             </div>
-          </div>
+          ) : null}
 
-          <div className="glass-card p-6">
-            <div className="mb-4 flex items-center gap-3">
-              <TrendingUp className="text-[#1e7e57]" size={18} />
-              <h3 className="section-title">可以继续推进</h3>
-            </div>
-            <div className="space-y-3">
-              {topGraduate.length === 0 ? (
-                <p className="text-sm leading-7 text-slate-500">当前没有特别适合继续推进审核的实验。</p>
-              ) : (
-                topGraduate.map(item => (
-                  <Link key={item.id} to={`/experiments/${item.id}/decision`} className="block rounded-2xl border border-[#cde5d7] bg-[#f6fbf8] p-4">
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <p className="font-semibold text-slate-900">{item.name}</p>
-                        <p className="mt-1 text-sm text-[#3f6f5a]">置信度 {(item.confidence * 100).toFixed(0)}%，可继续推进审核。</p>
+          {activeInsightPanel === 'graduate' ? (
+            <div className="mt-5">
+              <div className="mb-4 flex items-center gap-3">
+                <TrendingUp className="text-[#1e7e57]" size={18} />
+                <h3 className="section-title">可以继续推进</h3>
+              </div>
+              <div className="space-y-3">
+                {topGraduate.length === 0 ? (
+                  <p className="text-sm leading-7 text-slate-500">当前没有特别适合继续推进审核的实验。</p>
+                ) : (
+                  topGraduate.map(item => (
+                    <Link key={item.id} to={`/experiments/${item.id}/decision`} className="block rounded-2xl border border-[#cde5d7] bg-[#f6fbf8] p-4">
+                      <div className="flex items-center justify-between gap-4">
+                        <div>
+                          <p className="font-semibold text-slate-900">{item.name}</p>
+                          <p className="mt-1 text-sm text-[#3f6f5a]">置信度 {(item.confidence * 100).toFixed(0)}%，可继续推进审核。</p>
+                        </div>
+                        <CheckCircle2 size={18} className="text-[#1e7e57]" />
                       </div>
-                      <CheckCircle2 size={18} className="text-[#1e7e57]" />
-                    </div>
-                  </Link>
-                ))
-              )}
+                    </Link>
+                  ))
+                )}
+              </div>
             </div>
-          </div>
+          ) : null}
         </div>
       </section>
     </div>

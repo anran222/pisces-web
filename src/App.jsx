@@ -6,6 +6,7 @@ import ExperimentDetail from './pages/ExperimentDetail'
 import CreateExperiment from './pages/CreateExperiment'
 import Analysis from './pages/Analysis'
 import VariantGenerator from './pages/VariantGenerator'
+import ApplicationSpaces from './pages/ApplicationSpaces'
 
 function App() {
   return (
@@ -19,6 +20,7 @@ function App() {
           <Route path="experiments/create" element={<Navigate to="/ai-design" replace />} />
           <Route path="experiments/:id" element={<ExperimentDetail />} />
           <Route path="experiments/:id/decision" element={<Analysis />} />
+          <Route path="applications" element={<ApplicationSpaces />} />
           <Route path="analysis/:id" element={<Navigate to="/ai-center" replace />} />
           <Route path="variants-lab" element={<VariantGenerator />} />
           <Route path="dashboard" element={<Navigate to="/ai-center" replace />} />

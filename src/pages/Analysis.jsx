@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   AlertTriangle,
@@ -24,6 +24,7 @@ import {
   XAxis,
   YAxis
 } from 'recharts'
+import DataPipelineStatus from '../components/DataPipelineStatus'
 import { analysisAPI, experimentAPI } from '../services/api'
 import { buildGroupChartData, buildTimelineChartData } from '../utils/analysisTransformers'
 import { buildDecisionWorkspaceModel } from '../utils/aiDecisionTransformers'
@@ -60,21 +61,74 @@ export default function Analysis() {
   const [graduation, setGraduation] = useState(null)
   const [comparison, setComparison] = useState(null)
   const [timeline, setTimeline] = useState(null)
+  const [eventPipelineStatus, setEventPipelineStatus] = useState(null)
+  const [eventReplayJobs, setEventReplayJobs] = useState([])
+  const [eventReplayPlan, setEventReplayPlan] = useState(null)
+  const [eventReplayPlanError, setEventReplayPlanError] = useState('')
+  const [eventReplayPlanLoading, setEventReplayPlanLoading] = useState(false)
+  const [eventPipelineError, setEventPipelineError] = useState('')
+  const [eventPipelineActionLoading, setEventPipelineActionLoading] = useState('')
   const [loading, setLoading] = useState(true)
   const [exporting, setExporting] = useState(false)
+  const [activeDecisionPanel, setActiveDecisionPanel] = useState('pipeline')
+  const aiRequestIdRef = useRef(0)
+  const timelineRequestIdRef = useRef(0)
 
   useEffect(() => {
     loadData()
   }, [id])
 
+  const loadAiEvidence = async () => {
+    const requestId = aiRequestIdRef.current + 1
+    aiRequestIdRef.current = requestId
+
+    const [diagnosisRes, graduationRes] = await Promise.allSettled([
+      analysisAPI.getAIDiagnosis(id),
+      analysisAPI.getAIGraduationDecision(id)
+    ])
+
+    if (requestId !== aiRequestIdRef.current) {
+      return
+    }
+
+    setDiagnosis(diagnosisRes.status === 'fulfilled' ? (diagnosisRes.value.data || diagnosisRes.value) : null)
+    setGraduation(graduationRes.status === 'fulfilled' ? (graduationRes.value.data || graduationRes.value) : null)
+  }
+
+  const loadTimeline = async (metricKey) => {
+    const requestId = timelineRequestIdRef.current + 1
+    timelineRequestIdRef.current = requestId
+
+    const [timelineRes] = await Promise.allSettled([
+      analysisAPI.getTimeline(id, metricKey, 'DAY')
+    ])
+
+    if (requestId !== timelineRequestIdRef.current) {
+      return
+    }
+
+    setTimeline(timelineRes.status === 'fulfilled' ? (timelineRes.value.data || timelineRes.value) : null)
+  }
+
   const loadData = async () => {
     try {
       setLoading(true)
-      const [experimentRes, statisticsRes, diagnosisRes, graduationRes, comparisonRes] = await Promise.allSettled([
+      setEventPipelineError('')
+      setEventReplayPlan(null)
+      setEventReplayPlanError('')
+      setDiagnosis(null)
+      setGraduation(null)
+      const [
+        experimentRes,
+        statisticsRes,
+        eventPipelineRes,
+        eventReplayJobRes,
+        comparisonRes
+      ] = await Promise.allSettled([
         experimentAPI.get(id),
         analysisAPI.getStatistics(id),
-        analysisAPI.getAIDiagnosis(id),
-        analysisAPI.getAIGraduationDecision(id),
+        analysisAPI.getEventPipelineStatus(id),
+        analysisAPI.listEventReplayJobs(id, 3),
         analysisAPI.compareGroups(id)
       ])
 
@@ -83,16 +137,24 @@ export default function Analysis() {
       const primaryMetricDefinition = resolvePrimaryMetricDefinition(experimentData, statisticsData?.summary)
       const timelineMetricKey = primaryMetricDefinition?.key || statisticsData?.summary?.primaryMetricKey || 'CONVERSION_RATE'
 
-      const timelineRes = await Promise.allSettled([
-        analysisAPI.getTimeline(id, timelineMetricKey, 'DAY')
-      ])
-
       setExperiment(experimentData)
       setStatistics(statisticsData)
-      setDiagnosis(diagnosisRes.status === 'fulfilled' ? (diagnosisRes.value.data || diagnosisRes.value) : null)
-      setGraduation(graduationRes.status === 'fulfilled' ? (graduationRes.value.data || graduationRes.value) : null)
+      if (eventPipelineRes.status === 'fulfilled') {
+        setEventPipelineStatus(eventPipelineRes.value.data || eventPipelineRes.value)
+      } else {
+        setEventPipelineStatus(null)
+        setEventPipelineError(
+          eventPipelineRes.reason?.response?.data?.message
+            || eventPipelineRes.reason?.message
+            || '事件管道状态暂不可用'
+        )
+      }
+      setEventReplayJobs(eventReplayJobRes.status === 'fulfilled'
+        ? (eventReplayJobRes.value.data || eventReplayJobRes.value || [])
+        : [])
       setComparison(comparisonRes.status === 'fulfilled' ? (comparisonRes.value.data || comparisonRes.value) : null)
-      setTimeline(timelineRes[0].status === 'fulfilled' ? (timelineRes[0].value.data || timelineRes[0].value) : null)
+      setTimeline(null)
+      void loadTimeline(timelineMetricKey)
     } catch (error) {
       console.error('Failed to load decision workspace:', error)
       setExperiment(null)
@@ -101,9 +163,14 @@ export default function Analysis() {
       setGraduation(null)
       setComparison(null)
       setTimeline(null)
+      setEventPipelineStatus(null)
+      setEventReplayJobs([])
+      setEventPipelineError('事件管道状态暂不可用')
     } finally {
       setLoading(false)
     }
+
+    void loadAiEvidence()
   }
 
   const workspaceModel = useMemo(
@@ -128,6 +195,23 @@ export default function Analysis() {
   const timelineKeys = useMemo(() => Object.keys(timelineData[0] || {}).filter(key => key !== 'time'), [timelineData])
   const primaryMetricLabel = primaryMetricDefinition?.name || statistics?.summary?.primaryMetricKey || '主要指标'
   const isPrimaryMetricRate = primaryMetricDefinition?.aggregationType === 'RATE'
+  const baselinePrimaryMetricValue = useMemo(() => {
+    const baselineStats = Object.values(statistics?.groupStatistics || {})
+      .find(groupStats => groupStats?.isBaseline)
+    return baselineStats?.metricValues?.[workspaceModel.facts.primaryMetricKey] ?? null
+  }, [statistics, workspaceModel.facts.primaryMetricKey])
+  const primaryMetricLift = workspaceModel.facts.bestPrimaryMetricValue != null
+    && baselinePrimaryMetricValue != null
+    ? workspaceModel.facts.bestPrimaryMetricValue - baselinePrimaryMetricValue
+    : null
+  const primaryMetricLiftPercent = primaryMetricLift != null && baselinePrimaryMetricValue > 0
+    ? primaryMetricLift / baselinePrimaryMetricValue
+    : null
+  const decisionTabs = [
+    { key: 'pipeline', label: '数据链路', count: eventReplayJobs.length || 0 },
+    { key: 'facts', label: '事实与动作', count: workspaceModel.actions.length },
+    { key: 'timeline', label: '时间线', count: timelineData.length },
+  ]
 
   const exportReport = async () => {
     try {
@@ -145,6 +229,75 @@ export default function Analysis() {
       alert('导出失败: ' + (error.response?.data?.message || error.message))
     } finally {
       setExporting(false)
+    }
+  }
+
+  const handleRetryDeadEvents = async () => {
+    try {
+      setEventPipelineActionLoading('retry')
+      const response = await analysisAPI.retryDeadEvents(id)
+      alert(response.message || response.data?.message || '死信事件已重新投递')
+      await loadData()
+    } catch (error) {
+      alert('重投死信失败: ' + (error.response?.data?.message || error.message))
+    } finally {
+      setEventPipelineActionLoading('')
+    }
+  }
+
+  const handleReplayEventPipeline = async () => {
+    try {
+      setEventPipelineActionLoading('replay')
+      const response = await analysisAPI.replayEventPipeline(id)
+      alert(response.message || response.data?.message || '事件管道派生数据已重建')
+      await loadData()
+    } catch (error) {
+      alert('重放派生数据失败: ' + (error.response?.data?.message || error.message))
+    } finally {
+      setEventPipelineActionLoading('')
+    }
+  }
+
+  const handlePlanEventReplay = async (request) => {
+    try {
+      setEventReplayPlanLoading(true)
+      setEventReplayPlanError('')
+      const response = await analysisAPI.planEventReplay(id, request)
+      setEventReplayPlan(response.data || response)
+    } catch (error) {
+      setEventReplayPlan(null)
+      setEventReplayPlanError(error.response?.data?.message || error.message || '重放计划生成失败')
+    } finally {
+      setEventReplayPlanLoading(false)
+    }
+  }
+
+  const handleRepairEventMaterialization = async (request = {}, segmentIndex = null) => {
+    try {
+      const repairingSegment = Number.isInteger(segmentIndex)
+      setEventPipelineActionLoading(repairingSegment ? `repair-segment-${segmentIndex}` : 'repair-materialization')
+      const response = repairingSegment
+        ? await analysisAPI.repairEventMaterializationSegment(id, segmentIndex, request)
+        : await analysisAPI.repairEventMaterialization(id, request)
+      alert(response.message || response.data?.message || '缺失派生物化账本已修复')
+      await loadData()
+    } catch (error) {
+      alert('修复缺账本失败: ' + (error.response?.data?.message || error.message))
+    } finally {
+      setEventPipelineActionLoading('')
+    }
+  }
+
+  const handleCancelReplayJob = async (replayJobId) => {
+    try {
+      setEventPipelineActionLoading('cancel-replay')
+      const response = await analysisAPI.cancelEventReplayJob(id, replayJobId)
+      alert(response.message || response.data?.message || '事件重放任务已取消')
+      await loadData()
+    } catch (error) {
+      alert('取消重放任务失败: ' + (error.response?.data?.message || error.message))
+    } finally {
+      setEventPipelineActionLoading('')
     }
   }
 
@@ -205,7 +358,9 @@ export default function Analysis() {
                 护栏 {workspaceModel.hero.guardrailStatus}
               </span>
               <span className="badge border border-slate-200 bg-slate-50 text-slate-700">
-                置信度 {(workspaceModel.hero.confidence * 100).toFixed(0)}%
+                置信度 {workspaceModel.hero.confidence == null
+                  ? '待评估'
+                  : `${(workspaceModel.hero.confidence * 100).toFixed(0)}%`}
               </span>
             </div>
           </div>
@@ -227,6 +382,47 @@ export default function Analysis() {
         </div>
       </section>
 
+      <nav className="rounded-[1.2rem] border border-slate-200 bg-white/85 p-2">
+        <div className="flex flex-wrap gap-2">
+          {decisionTabs.map(tab => (
+            <button
+              key={tab.key}
+              type="button"
+              className={`rounded-full border px-3 py-2 text-xs font-semibold transition-colors ${
+                activeDecisionPanel === tab.key
+                  ? 'border-blue-200 bg-blue-50 text-[var(--brand)]'
+                  : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+              }`}
+              onClick={() => setActiveDecisionPanel(tab.key)}
+            >
+              {tab.label}
+              <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
+                {tab.count}
+              </span>
+            </button>
+          ))}
+        </div>
+      </nav>
+
+      {activeDecisionPanel === 'pipeline' ? (
+      <DataPipelineStatus
+        statistics={statistics}
+        eventPipelineStatus={eventPipelineStatus}
+        eventReplayJobs={eventReplayJobs}
+        eventReplayPlan={eventReplayPlan}
+        eventReplayPlanError={eventReplayPlanError}
+        eventReplayPlanLoading={eventReplayPlanLoading}
+        eventPipelineError={eventPipelineError}
+        eventPipelineActionLoading={eventPipelineActionLoading}
+        onRetryDeadEvents={handleRetryDeadEvents}
+        onReplayEventPipeline={handleReplayEventPipeline}
+        onPlanEventReplay={handlePlanEventReplay}
+        onRepairEventMaterialization={handleRepairEventMaterialization}
+        onCancelReplayJob={handleCancelReplayJob}
+      />
+      ) : null}
+
+      {activeDecisionPanel === 'facts' ? (
       <section className="grid grid-cols-1 gap-6 xl:grid-cols-[1.02fr_0.98fr]">
         <div className="space-y-6">
           <div className="glass-card p-6">
@@ -309,6 +505,27 @@ export default function Analysis() {
                 </p>
             </div>
             <div className="fact-tile">
+                <p className="text-sm text-slate-500">对照{primaryMetricLabel}</p>
+                <p className="mt-2 text-lg font-bold text-slate-900">
+                  {baselinePrimaryMetricValue != null
+                    ? (isPrimaryMetricRate
+                      ? `${(baselinePrimaryMetricValue * 100).toFixed(2)}%`
+                      : baselinePrimaryMetricValue.toFixed(2))
+                    : '-'}
+                </p>
+            </div>
+            <div className="fact-tile">
+                <p className="text-sm text-slate-500">{primaryMetricLabel}提升</p>
+                <p className="mt-2 text-lg font-bold text-[#1e7e57]">
+                  {primaryMetricLift != null && isPrimaryMetricRate
+                    ? `+${(primaryMetricLift * 100).toFixed(2)}pp`
+                    : '-'}
+                </p>
+                {primaryMetricLiftPercent != null ? (
+                  <p className="mt-1 text-xs text-slate-500">相对 +{(primaryMetricLiftPercent * 100).toFixed(1)}%</p>
+                ) : null}
+            </div>
+            <div className="fact-tile">
                 <p className="text-sm text-slate-500">最佳实验组</p>
                 <p className="mt-2 text-lg font-bold text-[var(--brand)]">{workspaceModel.hero.bestGroup}</p>
             </div>
@@ -378,7 +595,9 @@ export default function Analysis() {
           </div>
         </div>
       </section>
+      ) : null}
 
+      {activeDecisionPanel === 'timeline' ? (
       <section className="glass-card p-6">
           <div className="mb-5 flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
@@ -425,6 +644,7 @@ export default function Analysis() {
           </div>
         )}
       </section>
+      ) : null}
     </div>
   )
 }

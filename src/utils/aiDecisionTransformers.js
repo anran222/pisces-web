@@ -241,6 +241,7 @@ export const buildDefaultExperimentCreatePayload = (baseDate = new Date()) => {
   return {
     name: '',
     description: '',
+    layerId: '',
     startTime: formatDateTimeLocal(startDate),
     endTime: formatDateTimeLocal(addDays(startDate, 7)),
     eventDefinitions: [],
@@ -270,6 +271,7 @@ export const buildExperimentDraftFromResponse = (experiment) => {
   return {
     name: normalizeText(experiment.name),
     description: normalizeText(experiment.description),
+    layerId: normalizeText(experiment.layerId),
     startTime: experiment.startTime ? formatDateTimeLocal(experiment.startTime) : buildDefaultExperimentCreatePayload().startTime,
     endTime: experiment.endTime ? formatDateTimeLocal(experiment.endTime) : buildDefaultExperimentCreatePayload().endTime,
     eventDefinitions: (experiment.eventDefinitions || []).map(definition => ({ ...definition })),
@@ -311,18 +313,30 @@ const buildDemoExperimentCard = (key, title, tone, summary, experiment) => {
 export const buildDecisionWorkspaceModel = ({ statistics, diagnosis, graduation }) => {
   const summary = statistics?.summary || {}
   const quality = statistics?.dataQualityCheck || {}
+  const blockingIssues = quality.blockingIssues || []
+  const breachedGuardrails = summary.breachedGuardrails || []
+  const fallbackSummary = quality.analysisReady
+    ? '基础统计已就绪，等待 AI 决策结论。'
+    : '分析尚未就绪，继续运行并累计样本。'
+  const fallbackGuardrailStatus = blockingIssues.length > 0 || breachedGuardrails.length > 0
+    ? 'BLOCKED'
+    : (quality.analysisReady ? 'PASS' : 'UNKNOWN')
 
   return {
     hero: {
       decision: graduation?.decision || 'CONTINUE',
-      guardrailStatus: graduation?.guardrailStatus || diagnosis?.guardrailStatus || 'UNKNOWN',
-      summary: graduation?.summary || diagnosis?.summary || '暂无 AI 决策结论',
-      confidence: normalizeConfidence(graduation?.confidence ?? diagnosis?.confidence),
+      guardrailStatus: graduation?.guardrailStatus
+        || diagnosis?.guardrailStatus
+        || fallbackGuardrailStatus,
+      summary: graduation?.summary || diagnosis?.summary || fallbackSummary,
+      confidence: graduation || diagnosis
+        ? normalizeConfidence(graduation?.confidence ?? diagnosis?.confidence)
+        : null,
       totalVisitors: normalizeNumber(summary.totalVisitors),
       bestGroup: summary.bestPerformingGroup || '-'
     },
-    riskFlags: graduation?.riskFlags || diagnosis?.riskFlags || [],
-    blockingIssues: quality.blockingIssues || [],
+    riskFlags: graduation?.riskFlags || diagnosis?.riskFlags || [...blockingIssues, ...breachedGuardrails],
+    blockingIssues,
     actions: diagnosis?.recommendedActions || [],
     facts: {
       totalVisitors: normalizeNumber(summary.totalVisitors),
@@ -412,4 +426,80 @@ export const buildVariantCandidatePayload = ({
   }
 
   return payload
+}
+
+const normalizeVariantCandidateText = (candidate) => {
+  if (typeof candidate === 'string') {
+    return candidate.trim()
+  }
+  if (!candidate || typeof candidate !== 'object') {
+    return ''
+  }
+
+  return [
+    normalizeText(candidate.title),
+    normalizeText(candidate.content || candidate.text || candidate.copy || candidate.description),
+    normalizeText(candidate.rationale || candidate.reason)
+  ].filter(Boolean).join('\n')
+}
+
+const normalizeVariantCandidateImageUrl = (candidate) => {
+  const value = typeof candidate === 'string'
+    ? candidate
+    : candidate?.imageUrl || candidate?.url || candidate?.content || candidate?.text
+  return normalizeText(value)
+}
+
+export const normalizeVariantGenerationModelEvidence = (result) => {
+  const selectedModel = normalizeText(result?.aiModel)
+  const selectedApiMode = normalizeText(result?.aiApiMode)
+  const primaryModel = normalizeText(result?.aiPrimaryModel)
+  const fallbackModel = normalizeText(result?.aiFallbackModel)
+  const modelStrategy = normalizeText(result?.aiModelStrategy)
+  const attemptedModels = Array.isArray(result?.aiAttemptedModels)
+    ? result.aiAttemptedModels.map(model => normalizeText(model)).filter(Boolean)
+    : []
+
+  if (!selectedModel && !selectedApiMode && !primaryModel && !fallbackModel && attemptedModels.length === 0) {
+    return null
+  }
+
+  const fallbackUsed = typeof result?.aiFallbackUsed === 'boolean' ? result.aiFallbackUsed : null
+  const normalizedAttemptedModels = attemptedModels.length > 0
+    ? attemptedModels
+    : [selectedModel].filter(Boolean)
+
+  return {
+    provider: normalizeText(result?.aiProvider) || 'tongyi',
+    selectedModel,
+    selectedApiMode,
+    primaryModel,
+    fallbackModel,
+    fallbackUsed,
+    attemptedModels: normalizedAttemptedModels,
+    attemptedModelLabel: normalizedAttemptedModels.join(' -> '),
+    modelStrategy,
+    statusLabel: fallbackUsed ? '已回退' : (selectedModel.includes('preview') ? '预览模型' : '生产模型')
+  }
+}
+
+export const normalizeVariantCandidates = (result, variantType = 'TEXT') => {
+  const candidates = Array.isArray(result?.variants) ? result.variants : []
+  return candidates
+    .map((candidate, index) => {
+      const explicitId = typeof candidate === 'object' && candidate
+        ? candidate.id || candidate.variantId || candidate.key
+        : ''
+      const imageUrl = variantType === 'IMAGE' ? normalizeVariantCandidateImageUrl(candidate) : ''
+      const text = variantType === 'IMAGE'
+        ? normalizeVariantCandidateText(candidate) || imageUrl
+        : normalizeVariantCandidateText(candidate)
+
+      return {
+        id: normalizeText(explicitId) || `candidate-${index}`,
+        text,
+        imageUrl
+      }
+    })
+    .filter(candidate => candidate.text || candidate.imageUrl)
 }

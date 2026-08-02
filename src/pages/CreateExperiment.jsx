@@ -1,19 +1,22 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   AlertTriangle,
+  BookOpen,
   BrainCircuit,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Download,
   Loader2,
   PencilLine,
   Plus,
   Radar,
   Sparkles,
-  Trash2
+  Trash2,
+  X
 } from 'lucide-react'
-import { analysisAPI, experimentAPI } from '../services/api'
+import { analysisAPI, applicationAPI, experimentAPI } from '../services/api'
 import {
   buildEmptyEventDefinition,
   buildEmptyGroupConfigField,
@@ -29,6 +32,7 @@ import {
 } from '../utils/aiDecisionTransformers'
 import DemoExperimentPanel from '../components/DemoExperimentPanel'
 import { buildEditableGroupSummary, getEditableGroupPanelKey } from '../utils/editableGroupUtils'
+import { mergeApplicationDictionaryIntoDraft } from '../utils/applicationDictionary'
 
 const CREATION_MODE_MANUAL = 'manual'
 const CREATION_MODE_ASSISTED = 'assisted'
@@ -139,10 +143,49 @@ export default function CreateExperiment() {
   const [creating, setCreating] = useState(false)
   const [response, setResponse] = useState(null)
   const [draftPayload, setDraftPayload] = useState(() => buildDefaultExperimentCreatePayload())
+  const [applicationSpaces, setApplicationSpaces] = useState([])
+  const [applicationDictionary, setApplicationDictionary] = useState(null)
+  const [dictionaryLoading, setDictionaryLoading] = useState(false)
+  const [dictionaryError, setDictionaryError] = useState('')
+  const [dictionaryImportResult, setDictionaryImportResult] = useState(null)
   const [expandedDraftGroupPanels, setExpandedDraftGroupPanels] = useState({})
+  const [activeDraftPanel, setActiveDraftPanel] = useState('basics')
+  const [demoDialogOpen, setDemoDialogOpen] = useState(false)
+  const [assistantDialogOpen, setAssistantDialogOpen] = useState(false)
+
+  useEffect(() => {
+    loadApplicationSpaces()
+  }, [])
+
+  useEffect(() => {
+    if (!response && activeDraftPanel === 'summary') {
+      setActiveDraftPanel('basics')
+    }
+  }, [activeDraftPanel, response])
 
   const replaceDraft = (nextDraft) => {
-    setDraftPayload(buildExperimentCreatePayload({ experimentDraft: nextDraft }))
+    setDraftPayload(current => ({
+      ...buildExperimentCreatePayload({ experimentDraft: nextDraft }),
+      appId: nextDraft?.appId || current?.appId || ''
+    }))
+    setApplicationDictionary(null)
+    setDictionaryImportResult(null)
+    setDictionaryError('')
+  }
+
+  const loadApplicationSpaces = async () => {
+    try {
+      const responseData = await applicationAPI.list()
+      const spaces = responseData.data || responseData || []
+      setApplicationSpaces(spaces)
+      if (spaces.length > 0) {
+        setDraftPayload(current => (
+          normalizeText(current.appId) ? current : { ...current, appId: spaces[0].appId }
+        ))
+      }
+    } catch (error) {
+      setDictionaryError(error.response?.data?.message || error.message || '应用空间加载失败')
+    }
   }
 
   const handleModeChange = (nextMode) => {
@@ -152,6 +195,10 @@ export default function CreateExperiment() {
     }
     if (nextMode === CREATION_MODE_MANUAL) {
       setResponse(null)
+      setAssistantDialogOpen(false)
+    }
+    if (nextMode === CREATION_MODE_ASSISTED) {
+      setAssistantDialogOpen(true)
     }
   }
 
@@ -173,6 +220,7 @@ export default function CreateExperiment() {
       setMode(CREATION_MODE_ASSISTED)
       setResponse(nextResponse)
       replaceDraft(nextResponse.experimentDraft || buildDefaultExperimentCreatePayload())
+      setAssistantDialogOpen(false)
     } catch (error) {
       alert('生成实验方案失败: ' + (error.response?.data?.message || error.message))
       setResponse(null)
@@ -186,6 +234,43 @@ export default function CreateExperiment() {
       ...current,
       [field]: value
     }))
+  }
+
+  const updateDraftAppId = (value) => {
+    updateDraftField('appId', value)
+    setApplicationDictionary(null)
+    setDictionaryImportResult(null)
+    setDictionaryError('')
+  }
+
+  const loadApplicationDictionary = async (appId = draftPayload?.appId) => {
+    const normalizedAppId = normalizeText(appId)
+    if (!normalizedAppId) {
+      alert('请先选择应用 ID')
+      return
+    }
+    try {
+      setDictionaryLoading(true)
+      setDictionaryError('')
+      const responseData = await applicationAPI.getDictionary(normalizedAppId)
+      setApplicationDictionary(responseData.data || responseData)
+      setDictionaryImportResult(null)
+    } catch (error) {
+      setApplicationDictionary(null)
+      setDictionaryError(error.response?.data?.message || error.message || '应用字典加载失败')
+    } finally {
+      setDictionaryLoading(false)
+    }
+  }
+
+  const importApplicationDictionary = () => {
+    if (!applicationDictionary) {
+      alert('请先加载应用字典')
+      return
+    }
+    const result = mergeApplicationDictionaryIntoDraft(draftPayload, applicationDictionary)
+    setDraftPayload(result.draft)
+    setDictionaryImportResult(result)
   }
 
   const updateTrafficField = (field, value) => {
@@ -410,6 +495,8 @@ export default function CreateExperiment() {
   const eventDefinitions = draftPayload?.eventDefinitions || []
   const metricDefinitions = draftPayload?.metricDefinitions || []
   const groupConfigSchema = draftPayload?.groupConfigSchema || []
+  const dictionaryEventCount = applicationDictionary?.eventDefinitions?.length || 0
+  const dictionaryMetricCount = applicationDictionary?.metricDefinitions?.length || 0
   const availableEventOptions = eventDefinitions
     .map(definition => {
       const key = normalizeText(definition?.key).toUpperCase()
@@ -425,144 +512,217 @@ export default function CreateExperiment() {
     })
     .filter(Boolean)
   const confidencePercent = Math.round(normalizeConfidence(response?.confidence) * 100)
+  const draftEditorTabs = [
+    ...(response ? [{ key: 'summary', label: '方案', meta: `${confidencePercent}%` }] : []),
+    { key: 'basics', label: '基础', meta: draftPayload?.appId || '未选应用' },
+    { key: 'dictionary', label: '字典', meta: applicationDictionary ? `${dictionaryEventCount}/${dictionaryMetricCount}` : '未加载' },
+    { key: 'events', label: '事件', meta: `${eventDefinitions.length}` },
+    { key: 'metrics', label: '指标', meta: `${metricDefinitions.length}` },
+    { key: 'schema', label: '字段', meta: `${groupConfigSchema.length}` },
+    { key: 'groups', label: '分组', meta: `${draftGroups.length}` }
+  ]
 
   return (
     <div className="space-y-6">
-      <section className="glass-card p-5">
-        <div className="eyebrow mb-3">Create</div>
-        <h1 className="text-[2rem] font-bold tracking-[-0.04em] text-slate-900">新建实验</h1>
-        <p className="mt-2 page-subtitle">可以直接填写实验配置，也可以先生成方案，再根据结果调整实验参数。</p>
-
-        <div className="mt-5 inline-flex rounded-2xl border border-slate-200 bg-slate-50 p-1">
-          <button
-            onClick={() => handleModeChange(CREATION_MODE_MANUAL)}
-            className={`rounded-xl px-4 py-2 text-sm font-medium transition ${isManualMode ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}
-          >
-            直接填写
-          </button>
-          <button
-            onClick={() => handleModeChange(CREATION_MODE_ASSISTED)}
-            className={`rounded-xl px-4 py-2 text-sm font-medium transition ${!isManualMode ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}
-          >
-            生成方案
-          </button>
-        </div>
-      </section>
-
-      <DemoExperimentPanel
-        compact
-        title="快速生成示例实验"
-        description="需要快速演示时，可以直接生成两组示例实验，再进入详情和分析页查看结果。"
-        buttonLabel="生成示例实验"
-      />
-
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[0.92fr_1.08fr]">
-        <section className="glass-card p-6">
-          {isManualMode ? (
-            <>
-              <div className="mb-6">
-                <p className="signal-label">Manual</p>
-                <h2 className="section-title mt-2">直接填写实验参数</h2>
-                <p className="section-meta mt-2">右侧会立即展示可编辑的实验配置。你可以先填写基础信息、分组和流量，再直接创建实验。</p>
-              </div>
-
-              <div className="space-y-4">
-                <div className="rounded-[1.2rem] border border-slate-200 bg-white p-4">
-                  <div className="flex items-start gap-3">
-                    <div className="rounded-2xl border border-blue-100 bg-blue-50 p-3 text-[var(--brand)]">
-                      <PencilLine size={18} />
-                    </div>
-                    <div>
-                      <p className="font-semibold text-slate-900">当前为手动填写模式</p>
-                      <p className="mt-2 text-sm leading-7 text-slate-500">你可以直接修改实验名称、时间、分组和流量，不需要先等待方案结果。</p>
-                    </div>
-                  </div>
-                </div>
-
-                <button onClick={handleResetManualDraft} className="btn-secondary">
-                  恢复默认配置
-                </button>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="mb-6">
-                <p className="signal-label">Assisted</p>
-                <h2 className="section-title mt-2">生成实验方案</h2>
-                <p className="section-meta mt-2">描述业务目标和约束后，右侧会生成可直接调整的实验配置。</p>
-              </div>
-
-              <div className="space-y-5">
-                <div>
-                  <label className="mb-2 block text-sm text-slate-600">业务场景</label>
-                  <textarea
-                    value={form.businessScenario}
-                    onChange={(event) => setForm(current => ({ ...current, businessScenario: event.target.value }))}
-                    className="textarea"
-                    placeholder="例如：二手手机详情页标题与 CTA 文案优化，希望提升支付转化率。"
-                  />
-                </div>
-                <div>
-                  <label className="mb-2 block text-sm text-slate-600">目标指标</label>
-                  <input
-                    value={form.targetMetric}
-                    onChange={(event) => setForm(current => ({ ...current, targetMetric: event.target.value }))}
-                    className="input"
-                    placeholder="例如：支付转化率"
-                  />
-                </div>
-                <div>
-                  <label className="mb-2 block text-sm text-slate-600">约束条件</label>
-                  <textarea
-                    value={form.constraintsText}
-                    onChange={(event) => setForm(current => ({ ...current, constraintsText: event.target.value }))}
-                    className="textarea"
-                    placeholder="每行一个约束，例如：不要削弱价格可信度"
-                  />
-                </div>
-              </div>
-
-              <div className="mt-6 flex flex-wrap gap-3">
-                <button onClick={handleGenerateDraft} disabled={loading} className="btn-primary">
-                  {loading ? <Loader2 size={18} className="animate-spin" /> : <Radar size={18} />}
-                  生成实验方案
+      <section className="glass-card p-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="inline-flex w-fit rounded-2xl border border-slate-200 bg-slate-50 p-1">
+            <button
+              onClick={() => handleModeChange(CREATION_MODE_MANUAL)}
+              className={`rounded-xl px-4 py-2 text-sm font-medium transition ${isManualMode ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}
+            >
+              直接填写
+            </button>
+            <button
+              onClick={() => handleModeChange(CREATION_MODE_ASSISTED)}
+              className={`rounded-xl px-4 py-2 text-sm font-medium transition ${!isManualMode ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}
+            >
+              生成方案
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+            {!isManualMode ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setAssistantDialogOpen(true)}
+                  className="btn-primary shrink-0"
+                >
+                  <Radar size={18} />
+                  打开生成器
                 </button>
                 <button
+                  type="button"
                   onClick={() => {
                     setResponse(null)
                     replaceDraft(buildDefaultExperimentCreatePayload())
+                    setAssistantDialogOpen(true)
                   }}
-                  className="btn-secondary"
+                  className="btn-secondary shrink-0"
                 >
                   清空结果
                 </button>
-              </div>
-            </>
-          )}
-        </section>
+              </>
+            ) : (
+              <button onClick={handleResetManualDraft} className="btn-secondary shrink-0">
+                <PencilLine size={18} />
+                恢复默认配置
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setDemoDialogOpen(true)}
+              className="btn-secondary shrink-0"
+            >
+              <Sparkles size={18} />
+              示例实验
+            </button>
+          </div>
+        </div>
+      </section>
 
-        <section className="glass-card p-6">
-          <div className="mb-6 flex items-center justify-between gap-4">
+      {assistantDialogOpen && !isManualMode && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 px-4 py-6" role="dialog" aria-modal="true">
+          <div className="relative max-h-[86vh] w-full max-w-3xl overflow-y-auto rounded-[1.4rem] border border-slate-200 bg-white p-6 shadow-2xl">
+            <button
+              type="button"
+              title="关闭生成器"
+              aria-label="关闭生成器"
+              onClick={() => setAssistantDialogOpen(false)}
+              className="absolute right-4 top-4 rounded-xl border border-slate-200 bg-white p-2 text-slate-500 transition hover:text-slate-900"
+            >
+              <X size={18} />
+            </button>
+
+            <div className="mb-5 pr-10">
+              <p className="signal-label">Assisted</p>
+              <h2 className="section-title mt-2">生成实验方案</h2>
+              <p className="section-meta mt-2">描述业务目标和约束，生成后会回到主工作区继续编辑实验配置。</p>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="md:col-span-2">
+                <label className="mb-2 block text-sm text-slate-600">业务场景</label>
+                <textarea
+                  value={form.businessScenario}
+                  onChange={(event) => setForm(current => ({ ...current, businessScenario: event.target.value }))}
+                  className="textarea min-h-[112px]"
+                  placeholder="例如：二手手机详情页标题与 CTA 文案优化，希望提升支付转化率。"
+                />
+              </div>
+              <div>
+                <label className="mb-2 block text-sm text-slate-600">目标指标</label>
+                <input
+                  value={form.targetMetric}
+                  onChange={(event) => setForm(current => ({ ...current, targetMetric: event.target.value }))}
+                  className="input"
+                  placeholder="例如：支付转化率"
+                />
+              </div>
+              <div>
+                <label className="mb-2 block text-sm text-slate-600">约束条件</label>
+                <textarea
+                  value={form.constraintsText}
+                  onChange={(event) => setForm(current => ({ ...current, constraintsText: event.target.value }))}
+                  className="textarea min-h-[92px]"
+                  placeholder="每行一个约束，例如：不要削弱价格可信度"
+                />
+              </div>
+            </div>
+
+            <div className="mt-6 flex flex-wrap justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setResponse(null)
+                  replaceDraft(buildDefaultExperimentCreatePayload())
+                }}
+                className="btn-secondary"
+              >
+                清空结果
+              </button>
+              <button onClick={handleGenerateDraft} disabled={loading} className="btn-primary">
+                {loading ? <Loader2 size={18} className="animate-spin" /> : <Radar size={18} />}
+                生成实验方案
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {demoDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 px-4 py-6" role="dialog" aria-modal="true">
+          <div className="relative max-h-[86vh] w-full max-w-5xl overflow-y-auto rounded-[1.4rem] border border-slate-200 bg-white p-6 shadow-2xl">
+            <button
+              type="button"
+              title="关闭示例实验"
+              aria-label="关闭示例实验"
+              onClick={() => setDemoDialogOpen(false)}
+              className="absolute right-4 top-4 rounded-xl border border-slate-200 bg-white p-2 text-slate-500 transition hover:text-slate-900"
+            >
+              <X size={18} />
+            </button>
+            <DemoExperimentPanel
+              embedded
+              compact
+              title="快速生成示例实验"
+              description="需要快速演示时，可以直接生成两组示例实验，再进入详情和分析页查看结果。"
+              buttonLabel="生成示例实验"
+            />
+          </div>
+        </div>
+      )}
+
+      <section className="glass-card p-5">
+          <div className="mb-5 flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
             <div>
               <p className="signal-label">Draft</p>
               <h2 className="section-title mt-2">实验配置</h2>
             </div>
-            {response?.guardrailStatus && (
-              <span className={`badge border ${getDraftStatusTone(response.guardrailStatus)}`}>
-                {response.guardrailStatus}
-              </span>
-            )}
+            <div className="flex flex-wrap items-center gap-3 xl:justify-end">
+              {response?.guardrailStatus && (
+                <span className={`badge border ${getDraftStatusTone(response.guardrailStatus)}`}>
+                  {response.guardrailStatus}
+                </span>
+              )}
+              {shouldShowDraftEditor && (
+                <button onClick={handleCreateExperiment} disabled={creating} className="btn-primary shrink-0">
+                  {creating ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />}
+                  {isManualMode ? '直接创建实验' : '用方案创建实验'}
+                </button>
+              )}
+            </div>
           </div>
 
           {!shouldShowDraftEditor ? (
             <div className="rounded-[1.6rem] border border-dashed border-slate-200 bg-slate-50 p-8 text-center">
               <BrainCircuit size={32} className="mx-auto text-[var(--brand)]/70" />
               <p className="mt-4 text-lg font-semibold text-slate-900">方案还没生成</p>
-              <p className="mt-2 text-sm leading-7 text-slate-500">左侧填写业务目标后生成方案，这里会展示摘要、风险提示和实验配置。</p>
+              <p className="mt-2 text-sm leading-7 text-slate-500">打开生成器填写业务目标后，这里会展示摘要、风险提示和实验配置。</p>
             </div>
           ) : (
-            <div className="space-y-6">
-              {response && (
+            <div className="space-y-5">
+              <nav className="overflow-x-auto rounded-2xl border border-slate-200 bg-slate-50 p-1">
+                <div className="flex min-w-max gap-1">
+                  {draftEditorTabs.map(tab => (
+                    <button
+                      key={tab.key}
+                      type="button"
+                      onClick={() => setActiveDraftPanel(tab.key)}
+                      className={`flex min-w-[112px] items-center justify-between gap-3 rounded-xl px-3 py-2 text-sm transition ${activeDraftPanel === tab.key
+                        ? 'bg-white text-slate-900 shadow-sm'
+                        : 'text-slate-500 hover:bg-white/70 hover:text-slate-900'
+                      }`}
+                    >
+                      <span className="font-medium">{tab.label}</span>
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500">{tab.meta}</span>
+                    </button>
+                  ))}
+                </div>
+              </nav>
+
+              <div>
+                {activeDraftPanel === 'summary' && response && (
                 <div className="rounded-[1.2rem] border border-slate-200 bg-slate-50 p-5">
                   <div className="flex flex-wrap items-center gap-3">
                     <span className="badge border border-blue-200 bg-blue-50 text-[var(--brand)]">
@@ -578,9 +738,36 @@ export default function CreateExperiment() {
                   </div>
                   <p className="mt-4 text-base leading-8 text-slate-600">{response.summary}</p>
                 </div>
-              )}
+                )}
 
-              <div className="grid gap-4 md:grid-cols-2">
+                {activeDraftPanel === 'basics' && (
+                  <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="mb-2 block text-sm text-slate-600">应用 ID</label>
+                  <input
+                    list="application-space-options"
+                    value={draftPayload.appId || ''}
+                    onChange={(event) => updateDraftAppId(event.target.value)}
+                    className="input"
+                    placeholder="例如：shop-app"
+                  />
+                  <datalist id="application-space-options">
+                    {applicationSpaces.map(space => (
+                      <option key={space.appId} value={space.appId}>
+                        {space.displayName || space.appId}
+                      </option>
+                    ))}
+                  </datalist>
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm text-slate-600">实验层 ID</label>
+                  <input
+                    value={draftPayload.layerId || ''}
+                    onChange={(event) => updateDraftField('layerId', event.target.value)}
+                    className="input"
+                    placeholder="可选，例如：checkout-layer"
+                  />
+                </div>
                 <div>
                   <label className="mb-2 block text-sm text-slate-600">实验名称</label>
                   <input
@@ -617,9 +804,84 @@ export default function CreateExperiment() {
                     className="input"
                   />
                 </div>
-              </div>
+                  </div>
+                )}
 
-              <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5">
+                {activeDraftPanel === 'dictionary' && (
+                  <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-[var(--brand)]">
+                      <BookOpen size={18} />
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-slate-900">应用字典</h3>
+                      <p className="mt-1 text-sm text-slate-500">复用当前应用已经沉淀的事件和指标。</p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-3">
+                    <button
+                      type="button"
+                      onClick={() => loadApplicationDictionary()}
+                      className="btn-secondary"
+                      disabled={dictionaryLoading || !normalizeText(draftPayload.appId)}
+                    >
+                      {dictionaryLoading ? <Loader2 size={16} className="animate-spin" /> : <BookOpen size={16} />}
+                      加载字典
+                    </button>
+                    <button
+                      type="button"
+                      onClick={importApplicationDictionary}
+                      className="btn-primary"
+                      disabled={!applicationDictionary}
+                    >
+                      <Download size={16} />
+                      导入定义
+                    </button>
+                  </div>
+                </div>
+
+                {dictionaryError ? (
+                  <div className="mt-4 flex items-center gap-3 rounded-2xl border border-[#ecd8bf] bg-[#fff8ef] p-4 text-sm text-[#9a6026]">
+                    <AlertTriangle size={18} />
+                    {dictionaryError}
+                  </div>
+                ) : applicationDictionary ? (
+                  <div className="mt-4 grid gap-3 md:grid-cols-3">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <p className="signal-label">Events</p>
+                      <p className="signal-value text-xl">{dictionaryEventCount}</p>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <p className="signal-label">Metrics</p>
+                      <p className="signal-value text-xl">{dictionaryMetricCount}</p>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                      <p className="font-medium text-slate-900">{applicationDictionary.appId || draftPayload.appId}</p>
+                      <p className="mt-2">
+                        草稿已有 {eventDefinitions.length} 个事件、{metricDefinitions.length} 个指标
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm leading-7 text-slate-500">
+                    当前尚未加载应用字典。
+                  </div>
+                )}
+
+                {dictionaryImportResult ? (
+                  <div className="mt-4 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-[var(--brand)]">
+                    已导入 {dictionaryImportResult.importedEventCount} 个事件、{dictionaryImportResult.importedMetricCount} 个指标
+                    {dictionaryImportResult.skippedMetricCount > 0
+                      ? `，跳过 ${dictionaryImportResult.skippedMetricCount} 个引用缺失事件的指标`
+                    : ''}
+                  </div>
+                ) : null}
+                  </div>
+                )}
+
+                {activeDraftPanel === 'events' && (
+                  <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <h3 className="font-semibold text-slate-900">事件定义</h3>
@@ -636,7 +898,7 @@ export default function CreateExperiment() {
                     当前还没有事件定义。请先定义如 `PRODUCT_VIEW`、`PAY_SUCCESS` 这类事件。
                   </div>
                 ) : (
-                  <div className="mt-4 space-y-4">
+                  <div className="mt-4 max-h-[44vh] space-y-4 overflow-y-auto pr-1">
                     {eventDefinitions.map((eventDefinition, index) => (
                       <div key={`event-definition-${index}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                         <div className="flex items-center justify-between gap-3">
@@ -712,9 +974,11 @@ export default function CreateExperiment() {
                     ))}
                   </div>
                 )}
-              </div>
+                  </div>
+                )}
 
-              <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5">
+                {activeDraftPanel === 'metrics' && (
+                  <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <h3 className="font-semibold text-slate-900">指标定义</h3>
@@ -731,7 +995,7 @@ export default function CreateExperiment() {
                     当前还没有指标定义。你可以新增“支付率”“咨询率”“下单人数”这类更贴近业务的指标。
                   </div>
                 ) : (
-                  <div className="mt-4 space-y-4">
+                  <div className="mt-4 max-h-[44vh] space-y-4 overflow-y-auto pr-1">
                     {metricDefinitions.map((metricDefinition, index) => (
                       <div key={`metric-definition-${index}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                         <div className="flex items-center justify-between gap-3">
@@ -870,9 +1134,11 @@ export default function CreateExperiment() {
                     ))}
                   </div>
                 )}
-              </div>
+                  </div>
+                )}
 
-              <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5">
+                {activeDraftPanel === 'schema' && (
+                  <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <h3 className="font-semibold text-slate-900">配置字段定义</h3>
@@ -889,7 +1155,7 @@ export default function CreateExperiment() {
                     当前还没有配置字段定义。你可以直接新增 `mainTitle`、`subtitle`、`showQualityBadge` 这类字段。
                   </div>
                 ) : (
-                  <div className="mt-4 space-y-4">
+                  <div className="mt-4 max-h-[44vh] space-y-4 overflow-y-auto pr-1">
                     {groupConfigSchema.map((field, index) => (
                       <div key={`schema-field-${index}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                         <div className="flex items-center justify-between gap-3">
@@ -979,15 +1245,17 @@ export default function CreateExperiment() {
                     ))}
                   </div>
                 )}
-              </div>
+                  </div>
+                )}
 
-              <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+                {activeDraftPanel === 'groups' && (
+                  <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
                 <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5">
                   <div className="flex items-center gap-3">
                     <CheckCircle2 size={18} className="text-[#1e7e57]" />
                     <h3 className="font-semibold text-slate-900">实验组配置</h3>
                   </div>
-                  <div className="mt-4 space-y-3">
+                  <div className="mt-4 max-h-[48vh] space-y-3 overflow-y-auto pr-1">
                     {draftGroups.map((group, index) => {
                       const groupKey = getEditableGroupPanelKey(group, index)
                       const isExpanded = Boolean(expandedDraftGroupPanels[groupKey])
@@ -1159,18 +1427,12 @@ export default function CreateExperiment() {
                     </div>
                   </div>
                 </div>
-              </div>
-
-              <div className="flex flex-wrap gap-3">
-                <button onClick={handleCreateExperiment} disabled={creating} className="btn-primary">
-                  {creating ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />}
-                  {isManualMode ? '直接创建实验' : '用方案创建实验'}
-                </button>
+                  </div>
+                )}
               </div>
             </div>
           )}
-        </section>
-      </div>
+      </section>
     </div>
   )
 }
