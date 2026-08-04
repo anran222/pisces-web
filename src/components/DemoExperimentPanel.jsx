@@ -10,6 +10,12 @@ import {
 } from 'lucide-react'
 import { experimentAPI } from '../services/api'
 import { buildDemoExperimentCards } from '../utils/aiDecisionTransformers'
+import {
+  getDecisionLabel,
+  getGuardrailStatusLabel,
+  getMetricKeyLabel,
+  localizeSystemText,
+} from '../utils/uiLabels'
 
 const toneConfig = {
   success: {
@@ -48,7 +54,7 @@ export default function DemoExperimentPanel({
         onGenerated(response)
       }
     } catch (error) {
-      alert('生成示例实验失败: ' + (error.response?.data?.message || error.message))
+      alert('生成示例实验失败：' + localizeSystemText(error.response?.data?.message || error.message))
       setCards([])
     } finally {
       setLoading(false)
@@ -59,7 +65,7 @@ export default function DemoExperimentPanel({
     <PanelShell className={embedded ? '' : 'glass-card p-5'}>
       <div className={`flex gap-4 ${compact ? 'flex-col lg:flex-row lg:items-center lg:justify-between' : 'flex-col xl:flex-row xl:items-start xl:justify-between'}`}>
         <div className="max-w-2xl">
-          <div className="eyebrow mb-3">Demo</div>
+          <div className="eyebrow mb-3">示例实验</div>
           <h2 className="section-title text-[1.45rem]">{title}</h2>
           <p className="mt-2 page-subtitle">{description}</p>
         </div>
@@ -83,7 +89,7 @@ export default function DemoExperimentPanel({
                     <div className="min-w-0">
                       <p className="text-sm font-semibold text-slate-500">{card.title}</p>
                       <h3 className="mt-1 text-lg font-bold tracking-[-0.03em] text-slate-900">{card.experimentName}</h3>
-                      <p className="mt-2 text-sm leading-7 text-slate-600">{card.summary}</p>
+                      <p className="mt-2 text-sm leading-7 text-slate-600">{localizeSystemText(card.summary)}</p>
                     </div>
                   </div>
                   <span className={`badge border ${tone.badgeClassName}`}>
@@ -111,13 +117,13 @@ export default function DemoExperimentPanel({
                     是否可停止 {card.canStop ? '是' : '否'}
                   </span>
                   <span className="badge border border-slate-200 bg-white text-slate-700">
-                    AI 决策 {card.aiDecision}
+                    智能决策 {getDecisionLabel(card.aiDecision)}
                   </span>
                   <span className="badge border border-slate-200 bg-white text-slate-700">
-                    守护状态 {card.aiGuardrailStatus}
+                    护栏状态 {getGuardrailStatusLabel(card.aiGuardrailStatus)}
                   </span>
                   <span className="badge border border-slate-200 bg-white text-slate-700">
-                    主指标 {card.primaryMetricKey}
+                    主要指标 {getMetricKeyLabel(card.primaryMetricKey)}
                   </span>
                   <span className="badge border border-slate-200 bg-white text-slate-700">
                     {card.groupCount} 个实验组

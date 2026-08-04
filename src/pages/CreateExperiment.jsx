@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   AlertTriangle,
   BookOpen,
@@ -7,62 +7,49 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
-  Download,
   Loader2,
   PencilLine,
   Plus,
-  Radar,
   Sparkles,
   Trash2,
   X
 } from 'lucide-react'
-import { analysisAPI, applicationAPI, experimentAPI } from '../services/api'
+import { applicationAPI, experimentAPI } from '../services/api'
 import {
-  buildEmptyEventDefinition,
   buildEmptyGroupConfigField,
-  buildEmptyMetricDefinition,
   buildDefaultExperimentCreatePayload,
   buildExperimentCreatePayload,
   EVENT_CATEGORY_OPTIONS,
   EVENT_KEY_PATTERN,
   GROUP_CONFIG_VALUE_TYPE_OPTIONS,
   METRIC_AGGREGATION_TYPE_OPTIONS,
-  METRIC_DENOMINATOR_TYPE_OPTIONS,
-  normalizeConfidence
+  METRIC_DENOMINATOR_TYPE_OPTIONS
 } from '../utils/aiDecisionTransformers'
 import DemoExperimentPanel from '../components/DemoExperimentPanel'
-import { buildEditableGroupSummary, getEditableGroupPanelKey } from '../utils/editableGroupUtils'
-import { mergeApplicationDictionaryIntoDraft } from '../utils/applicationDictionary'
+import {
+  buildEditableGroupSummary,
+  buildExperimentGroupTrafficAllocation,
+  buildNextExperimentGroup,
+  getEditableGroupPanelKey,
+  rebalanceExperimentGroupTraffic
+} from '../utils/editableGroupUtils'
+import {
+  getMetricReferencedEventKeys,
+  selectApplicationDictionaryDefinitions,
+} from '../utils/applicationDictionary'
+import {
+  getValueTypeLabel,
+  localizeSystemText,
+  TRAFFIC_STRATEGY_OPTIONS,
+} from '../utils/uiLabels'
 
-const CREATION_MODE_MANUAL = 'manual'
-const CREATION_MODE_ASSISTED = 'assisted'
 const DEFAULT_TRAFFIC_STRATEGY = 'HASH'
 const DEFAULT_TOTAL_TRAFFIC = 1
-
-const getDraftStatusTone = (status) => {
-  if (status === 'PASS') {
-    return 'border-[#cde5d7] bg-[#f6fbf8] text-[#1e7e57]'
-  }
-  if (status === 'BLOCKED') {
-    return 'border-[#e7c8c4] bg-[#fff7f5] text-[#b44f42]'
-  }
-  return 'border-blue-200 bg-blue-50 text-[var(--brand)]'
-}
-
-const parseConstraints = (value) => value
-  .split('\n')
-  .map(item => item.trim())
-  .filter(Boolean)
-
-const buildTrafficAllocation = (groups = []) => groups.map(group => ({
-  group: group.id,
-  ratio: Number(group.trafficRatio) || 0
-}))
 
 const normalizeTraffic = (traffic = {}, groups = []) => ({
   strategy: traffic.strategy || DEFAULT_TRAFFIC_STRATEGY,
   totalTraffic: Number.isFinite(Number(traffic.totalTraffic)) ? Number(traffic.totalTraffic) : DEFAULT_TOTAL_TRAFFIC,
-  allocation: buildTrafficAllocation(groups)
+  allocation: buildExperimentGroupTrafficAllocation(groups)
 })
 
 const normalizeNumberInput = (value, fallback) => {
@@ -92,8 +79,38 @@ const formatEditableValue = (value, valueType) => {
 const getMissingRequiredDraftMessage = (draftPayload) => {
   const eventDefinitions = draftPayload?.eventDefinitions || []
   const metricDefinitions = draftPayload?.metricDefinitions || []
+  const groups = draftPayload?.groups || []
   const primaryMetricCount = metricDefinitions.filter(metric => metric?.primaryMetric).length
 
+  if (!normalizeText(draftPayload?.appId)) {
+    return '请选择应用空间'
+  }
+  if (!normalizeText(draftPayload?.name)) {
+    return '请填写实验名称'
+  }
+  if (groups.length < 2) {
+    return '请至少保留两个实验组'
+  }
+  if (groups.some(group => !normalizeText(group?.id) || !normalizeText(group?.name))) {
+    return '请完整填写实验组标识和名称'
+  }
+  if (new Set(groups.map(group => normalizeText(group.id))).size !== groups.length) {
+    return '实验组标识不能重复'
+  }
+  const totalGroupTraffic = groups.reduce((total, group) => total + Number(group.trafficRatio || 0), 0)
+  if (Math.abs(totalGroupTraffic - 1) > 0.001) {
+    return '实验组流量比例之和必须为 1'
+  }
+  const requiredSchemaFields = (draftPayload?.groupConfigSchema || [])
+    .filter(field => field?.required && normalizeText(field?.key))
+  for (const group of groups) {
+    for (const field of requiredSchemaFields) {
+      const fieldValue = group?.config?.[field.key]
+      if (fieldValue === null || fieldValue === undefined || fieldValue === '') {
+        return `实验组「${group.name || group.id}」缺少必填字段「${field.label || field.key}」`
+      }
+    }
+  }
   if (eventDefinitions.length === 0) {
     return '请至少定义一个事件'
   }
@@ -102,7 +119,7 @@ const getMissingRequiredDraftMessage = (draftPayload) => {
       return '请完整填写事件定义'
     }
     if (!EVENT_KEY_PATTERN.test(normalizeText(eventDefinition.key).toUpperCase())) {
-      return '事件编码只支持大写英文、数字和下划线'
+      return '事件编码只支持大写字母、数字和下划线'
     }
   }
 
@@ -117,14 +134,14 @@ const getMissingRequiredDraftMessage = (draftPayload) => {
       return '请完整填写指标定义'
     }
     if (!EVENT_KEY_PATTERN.test(normalizeText(metricDefinition.key).toUpperCase())) {
-      return '指标编码只支持大写英文、数字和下划线'
+      return '指标编码只支持大写字母、数字和下划线'
     }
     if (!normalizeText(metricDefinition?.numeratorEventType)) {
       return '请为指标选择事件'
     }
     if (metricDefinition?.aggregationType === 'RATE' && metricDefinition?.denominatorType === 'EVENT_COUNT'
       && !normalizeText(metricDefinition?.denominatorEventType)) {
-      return 'RATE 指标需要选择分母事件'
+      return '比率指标需要选择分母事件'
     }
   }
 
@@ -133,35 +150,115 @@ const getMissingRequiredDraftMessage = (draftPayload) => {
 
 export default function CreateExperiment() {
   const navigate = useNavigate()
-  const [mode, setMode] = useState(CREATION_MODE_MANUAL)
-  const [form, setForm] = useState({
-    businessScenario: '',
-    targetMetric: '',
-    constraintsText: '保持品牌可信度\n避免误导性表述'
-  })
-  const [loading, setLoading] = useState(false)
+  const location = useLocation()
   const [creating, setCreating] = useState(false)
-  const [response, setResponse] = useState(null)
   const [draftPayload, setDraftPayload] = useState(() => buildDefaultExperimentCreatePayload())
   const [applicationSpaces, setApplicationSpaces] = useState([])
   const [applicationDictionary, setApplicationDictionary] = useState(null)
   const [dictionaryLoading, setDictionaryLoading] = useState(false)
   const [dictionaryError, setDictionaryError] = useState('')
-  const [dictionaryImportResult, setDictionaryImportResult] = useState(null)
   const [expandedDraftGroupPanels, setExpandedDraftGroupPanels] = useState({})
   const [activeDraftPanel, setActiveDraftPanel] = useState('basics')
   const [demoDialogOpen, setDemoDialogOpen] = useState(false)
-  const [assistantDialogOpen, setAssistantDialogOpen] = useState(false)
+  const [importedVariantPlanName, setImportedVariantPlanName] = useState('')
+  const [importedVariantSummary, setImportedVariantSummary] = useState(null)
 
   useEffect(() => {
     loadApplicationSpaces()
   }, [])
 
   useEffect(() => {
-    if (!response && activeDraftPanel === 'summary') {
-      setActiveDraftPanel('basics')
+    const appId = normalizeText(draftPayload?.appId)
+    if (!appId) {
+      setApplicationDictionary(null)
+      return undefined
     }
-  }, [activeDraftPanel, response])
+
+    let active = true
+    setDictionaryLoading(true)
+    setDictionaryError('')
+    applicationAPI.getDictionary(appId)
+      .then((responseData) => {
+        if (!active) return
+        const dictionary = responseData.data || responseData || {}
+        setApplicationDictionary(dictionary)
+        setDraftPayload((current) => {
+          if (normalizeText(current?.appId) !== appId) return current
+          return selectApplicationDictionaryDefinitions(current, dictionary, {
+            eventKeys: (current.eventDefinitions || []).map(definition => definition.key),
+            metricKeys: (current.metricDefinitions || []).map(definition => definition.key),
+          })
+        })
+      })
+      .catch((error) => {
+        if (!active) return
+        setApplicationDictionary(null)
+        setDictionaryError(localizeSystemText(error.response?.data?.message || error.message || '应用字典加载失败'))
+      })
+      .finally(() => {
+        if (active) setDictionaryLoading(false)
+      })
+
+    return () => {
+      active = false
+    }
+  }, [draftPayload?.appId])
+
+  useEffect(() => {
+    const experimentDraft = location.state?.experimentDraft
+    if (experimentDraft) {
+      setDraftPayload(experimentDraft)
+      setApplicationDictionary(location.state?.applicationDictionary || null)
+      setImportedVariantPlanName(location.state?.importedVariantPlan?.name || '候选方案')
+      setImportedVariantSummary(location.state?.importedVariantPlan?.summary || null)
+      setActiveDraftPanel('basics')
+      navigate('/ai-design', { replace: true, state: null })
+      return
+    }
+    const variantPlan = location.state?.variantPlan
+    if (!variantPlan) {
+      return
+    }
+    setDraftPayload(current => {
+      const baseDraft = current || buildDefaultExperimentCreatePayload()
+      const baseGroups = baseDraft.groups?.length >= 2
+        ? baseDraft.groups
+        : buildDefaultExperimentCreatePayload().groups
+      const planField = {
+        key: 'proposal_content',
+        label: '方案内容',
+        valueType: 'STRING',
+        required: true,
+        description: variantPlan.placement ? `投放位置：${variantPlan.placement}` : '本次实验投放的方案内容',
+        defaultValue: variantPlan.baseline || '当前线上方案'
+      }
+      return {
+        ...baseDraft,
+        appId: variantPlan.appId || baseDraft.appId || '',
+        name: variantPlan.experimentName || baseDraft.name || '候选方案实验',
+        description: [variantPlan.description, variantPlan.risk ? `风险护栏：${variantPlan.risk}` : '']
+          .filter(Boolean)
+          .join(' '),
+        groupConfigSchema: [
+          ...(baseDraft.groupConfigSchema || []).filter(field => field.key !== planField.key),
+          planField
+        ],
+        groups: baseGroups.map((group, index) => ({
+          ...group,
+          name: index === 0 ? '当前方案' : (index === 1 ? (variantPlan.planName || '候选方案') : group.name),
+          config: {
+            ...(group.config || {}),
+            proposal_content: index === 0
+              ? (variantPlan.baseline || '当前线上方案')
+              : (variantPlan.candidateContent || '')
+          }
+        }))
+      }
+    })
+    setImportedVariantPlanName(variantPlan.planName || '候选方案')
+    setActiveDraftPanel('basics')
+    navigate('/ai-design', { replace: true, state: null })
+  }, [])
 
   const replaceDraft = (nextDraft) => {
     setDraftPayload(current => ({
@@ -169,7 +266,6 @@ export default function CreateExperiment() {
       appId: nextDraft?.appId || current?.appId || ''
     }))
     setApplicationDictionary(null)
-    setDictionaryImportResult(null)
     setDictionaryError('')
   }
 
@@ -184,48 +280,7 @@ export default function CreateExperiment() {
         ))
       }
     } catch (error) {
-      setDictionaryError(error.response?.data?.message || error.message || '应用空间加载失败')
-    }
-  }
-
-  const handleModeChange = (nextMode) => {
-    setMode(nextMode)
-    if (nextMode === CREATION_MODE_MANUAL && !draftPayload) {
-      replaceDraft(buildDefaultExperimentCreatePayload())
-    }
-    if (nextMode === CREATION_MODE_MANUAL) {
-      setResponse(null)
-      setAssistantDialogOpen(false)
-    }
-    if (nextMode === CREATION_MODE_ASSISTED) {
-      setAssistantDialogOpen(true)
-    }
-  }
-
-  const handleGenerateDraft = async () => {
-    if (!form.businessScenario.trim() || !form.targetMetric.trim()) {
-      alert('请先填写业务场景和目标指标')
-      return
-    }
-
-    try {
-      setLoading(true)
-      const payload = {
-        businessScenario: form.businessScenario.trim(),
-        targetMetric: form.targetMetric.trim(),
-        constraints: parseConstraints(form.constraintsText)
-      }
-      const result = await analysisAPI.designExperiment(payload)
-      const nextResponse = result.data || result
-      setMode(CREATION_MODE_ASSISTED)
-      setResponse(nextResponse)
-      replaceDraft(nextResponse.experimentDraft || buildDefaultExperimentCreatePayload())
-      setAssistantDialogOpen(false)
-    } catch (error) {
-      alert('生成实验方案失败: ' + (error.response?.data?.message || error.message))
-      setResponse(null)
-    } finally {
-      setLoading(false)
+      setDictionaryError(localizeSystemText(error.response?.data?.message || error.message || '应用空间加载失败'))
     }
   }
 
@@ -237,40 +292,97 @@ export default function CreateExperiment() {
   }
 
   const updateDraftAppId = (value) => {
-    updateDraftField('appId', value)
+    setDraftPayload(current => ({
+      ...current,
+      appId: value,
+      eventDefinitions: [],
+      metricDefinitions: [],
+    }))
     setApplicationDictionary(null)
-    setDictionaryImportResult(null)
     setDictionaryError('')
   }
 
   const loadApplicationDictionary = async (appId = draftPayload?.appId) => {
     const normalizedAppId = normalizeText(appId)
     if (!normalizedAppId) {
-      alert('请先选择应用 ID')
+      alert('请先选择应用标识')
       return
     }
     try {
       setDictionaryLoading(true)
       setDictionaryError('')
       const responseData = await applicationAPI.getDictionary(normalizedAppId)
-      setApplicationDictionary(responseData.data || responseData)
-      setDictionaryImportResult(null)
+      const dictionary = responseData.data || responseData || {}
+      setApplicationDictionary(dictionary)
+      setDraftPayload(current => selectApplicationDictionaryDefinitions(current, dictionary, {
+        eventKeys: (current.eventDefinitions || []).map(definition => definition.key),
+        metricKeys: (current.metricDefinitions || []).map(definition => definition.key),
+      }))
     } catch (error) {
       setApplicationDictionary(null)
-      setDictionaryError(error.response?.data?.message || error.message || '应用字典加载失败')
+      setDictionaryError(localizeSystemText(error.response?.data?.message || error.message || '应用字典加载失败'))
     } finally {
       setDictionaryLoading(false)
     }
   }
 
-  const importApplicationDictionary = () => {
-    if (!applicationDictionary) {
-      alert('请先加载应用字典')
-      return
+  const updateDictionarySelection = ({ eventKeys, metricKeys, primaryMetricKey = '' }) => {
+    if (!applicationDictionary) return
+    setDraftPayload(current => selectApplicationDictionaryDefinitions(current, applicationDictionary, {
+      eventKeys,
+      metricKeys,
+      primaryMetricKey,
+    }))
+  }
+
+  const selectAllDictionaryDefinitions = () => {
+    updateDictionarySelection({
+      eventKeys: (applicationDictionary?.eventDefinitions || []).map(definition => definition.key),
+      metricKeys: (applicationDictionary?.metricDefinitions || []).map(definition => definition.key),
+    })
+  }
+
+  const clearDictionarySelection = () => {
+    updateDictionarySelection({ eventKeys: [], metricKeys: [] })
+  }
+
+  const toggleDictionaryEvent = (eventKey) => {
+    const normalizedEventKey = normalizeText(eventKey).toUpperCase()
+    const selectedEventKeys = new Set((draftPayload.eventDefinitions || [])
+      .map(definition => normalizeText(definition.key).toUpperCase()))
+    const selectedMetricKeys = (draftPayload.metricDefinitions || [])
+      .filter(metric => !selectedEventKeys.has(normalizedEventKey)
+        || !getMetricReferencedEventKeys(metric).includes(normalizedEventKey))
+      .map(metric => metric.key)
+    if (selectedEventKeys.has(normalizedEventKey)) {
+      selectedEventKeys.delete(normalizedEventKey)
+    } else {
+      selectedEventKeys.add(normalizedEventKey)
     }
-    const result = mergeApplicationDictionaryIntoDraft(draftPayload, applicationDictionary)
-    setDraftPayload(result.draft)
-    setDictionaryImportResult(result)
+    updateDictionarySelection({ eventKeys: [...selectedEventKeys], metricKeys: selectedMetricKeys })
+  }
+
+  const toggleDictionaryMetric = (metricKey) => {
+    const normalizedMetricKey = normalizeText(metricKey).toUpperCase()
+    const selectedMetricKeys = new Set((draftPayload.metricDefinitions || [])
+      .map(definition => normalizeText(definition.key).toUpperCase()))
+    if (selectedMetricKeys.has(normalizedMetricKey)) {
+      selectedMetricKeys.delete(normalizedMetricKey)
+    } else {
+      selectedMetricKeys.add(normalizedMetricKey)
+    }
+    updateDictionarySelection({
+      eventKeys: (draftPayload.eventDefinitions || []).map(definition => definition.key),
+      metricKeys: [...selectedMetricKeys],
+    })
+  }
+
+  const selectPrimaryMetric = (metricKey) => {
+    updateDictionarySelection({
+      eventKeys: (draftPayload.eventDefinitions || []).map(definition => definition.key),
+      metricKeys: (draftPayload.metricDefinitions || []).map(definition => definition.key),
+      primaryMetricKey: metricKey,
+    })
   }
 
   const updateTrafficField = (field, value) => {
@@ -306,60 +418,43 @@ export default function CreateExperiment() {
     })
   }
 
+  const addExperimentGroup = () => {
+    setDraftPayload(current => {
+      const nextGroup = buildNextExperimentGroup(current.groups || [])
+      const groups = rebalanceExperimentGroupTraffic([...(current.groups || []), nextGroup])
+      return {
+        ...current,
+        groups,
+        traffic: normalizeTraffic(current.traffic, groups)
+      }
+    })
+  }
+
+  const removeExperimentGroup = (index) => {
+    setDraftPayload(current => {
+      if ((current.groups || []).length <= 2) {
+        return current
+      }
+      const groups = rebalanceExperimentGroupTraffic(
+        (current.groups || []).filter((_, groupIndex) => groupIndex !== index)
+      )
+      return {
+        ...current,
+        groups,
+        traffic: normalizeTraffic(current.traffic, groups)
+      }
+    })
+  }
+
+  const addSchemaFieldFromGroups = () => {
+    addSchemaField()
+    setActiveDraftPanel('schema')
+  }
+
   const addSchemaField = () => {
     setDraftPayload(current => ({
       ...current,
       groupConfigSchema: [...(current.groupConfigSchema || []), buildEmptyGroupConfigField()]
-    }))
-  }
-
-  const addEventDefinition = () => {
-    setDraftPayload(current => ({
-      ...current,
-      eventDefinitions: [...(current.eventDefinitions || []), buildEmptyEventDefinition()]
-    }))
-  }
-
-  const updateEventDefinition = (index, field, value) => {
-    setDraftPayload(current => ({
-      ...current,
-      eventDefinitions: (current.eventDefinitions || []).map((definition, definitionIndex) => (
-        definitionIndex === index
-          ? { ...definition, [field]: field === 'primary' ? Boolean(value) : value }
-          : definition
-      ))
-    }))
-  }
-
-  const removeEventDefinition = (index) => {
-    setDraftPayload(current => ({
-      ...current,
-      eventDefinitions: (current.eventDefinitions || []).filter((_, definitionIndex) => definitionIndex !== index)
-    }))
-  }
-
-  const addMetricDefinition = () => {
-    setDraftPayload(current => ({
-      ...current,
-      metricDefinitions: [...(current.metricDefinitions || []), buildEmptyMetricDefinition()]
-    }))
-  }
-
-  const updateMetricDefinition = (index, field, value) => {
-    setDraftPayload(current => ({
-      ...current,
-      metricDefinitions: (current.metricDefinitions || []).map((definition, definitionIndex) => (
-        definitionIndex === index
-          ? { ...definition, [field]: ['primaryMetric', 'guardrailMetric'].includes(field) ? Boolean(value) : value }
-          : definition
-      ))
-    }))
-  }
-
-  const removeMetricDefinition = (index) => {
-    setDraftPayload(current => ({
-      ...current,
-      metricDefinitions: (current.metricDefinitions || []).filter((_, definitionIndex) => definitionIndex !== index)
     }))
   }
 
@@ -456,9 +551,10 @@ export default function CreateExperiment() {
   }
 
   const handleResetManualDraft = () => {
-    setResponse(null)
     replaceDraft(buildDefaultExperimentCreatePayload())
     setExpandedDraftGroupPanels({})
+    setImportedVariantPlanName('')
+    setImportedVariantSummary(null)
   }
 
   const handleCreateExperiment = async () => {
@@ -483,37 +579,30 @@ export default function CreateExperiment() {
       }
       navigate('/experiments')
     } catch (error) {
-      alert('创建实验失败: ' + (error.response?.data?.message || error.message))
+      alert('创建实验失败：' + localizeSystemText(error.response?.data?.message || error.message))
     } finally {
       setCreating(false)
     }
   }
 
-  const isManualMode = mode === CREATION_MODE_MANUAL
-  const shouldShowDraftEditor = isManualMode || Boolean(response)
   const draftGroups = draftPayload?.groups || []
   const eventDefinitions = draftPayload?.eventDefinitions || []
   const metricDefinitions = draftPayload?.metricDefinitions || []
   const groupConfigSchema = draftPayload?.groupConfigSchema || []
-  const dictionaryEventCount = applicationDictionary?.eventDefinitions?.length || 0
-  const dictionaryMetricCount = applicationDictionary?.metricDefinitions?.length || 0
-  const availableEventOptions = eventDefinitions
-    .map(definition => {
-      const key = normalizeText(definition?.key).toUpperCase()
-      if (!key) {
-        return null
-      }
-      return {
-        value: key,
-        label: definition?.label
-          ? `${definition.label}（${key}）`
-          : key
-      }
-    })
-    .filter(Boolean)
-  const confidencePercent = Math.round(normalizeConfidence(response?.confidence) * 100)
+  const selectedApplicationSpace = applicationSpaces.find(space => space.appId === draftPayload?.appId)
+  const dictionaryEventDefinitions = applicationDictionary?.eventDefinitions || []
+  const dictionaryMetricDefinitions = applicationDictionary?.metricDefinitions || []
+  const dictionaryEventCount = dictionaryEventDefinitions.length
+  const dictionaryMetricCount = dictionaryMetricDefinitions.length
+  const selectedEventKeys = new Set(eventDefinitions
+    .map(definition => normalizeText(definition?.key).toUpperCase()))
+  const selectedMetricKeys = new Set(metricDefinitions
+    .map(definition => normalizeText(definition?.key).toUpperCase()))
+  const dictionaryEventLabels = new Map(dictionaryEventDefinitions.map(definition => [
+    normalizeText(definition?.key).toUpperCase(),
+    definition?.label || definition?.key || '未命名事件',
+  ]))
   const draftEditorTabs = [
-    ...(response ? [{ key: 'summary', label: '方案', meta: `${confidencePercent}%` }] : []),
     { key: 'basics', label: '基础', meta: draftPayload?.appId || '未选应用' },
     { key: 'dictionary', label: '字典', meta: applicationDictionary ? `${dictionaryEventCount}/${dictionaryMetricCount}` : '未加载' },
     { key: 'events', label: '事件', meta: `${eventDefinitions.length}` },
@@ -528,47 +617,24 @@ export default function CreateExperiment() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="inline-flex w-fit rounded-2xl border border-slate-200 bg-slate-50 p-1">
             <button
-              onClick={() => handleModeChange(CREATION_MODE_MANUAL)}
-              className={`rounded-xl px-4 py-2 text-sm font-medium transition ${isManualMode ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}
+              type="button"
+              className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-slate-900 shadow-sm"
             >
               直接填写
             </button>
             <button
-              onClick={() => handleModeChange(CREATION_MODE_ASSISTED)}
-              className={`rounded-xl px-4 py-2 text-sm font-medium transition ${!isManualMode ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}
+              type="button"
+              onClick={() => navigate('/variants-lab')}
+              className="rounded-xl px-4 py-2 text-sm font-medium text-slate-500 transition hover:bg-white/70 hover:text-slate-900"
             >
               生成方案
             </button>
           </div>
           <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-            {!isManualMode ? (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setAssistantDialogOpen(true)}
-                  className="btn-primary shrink-0"
-                >
-                  <Radar size={18} />
-                  打开生成器
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setResponse(null)
-                    replaceDraft(buildDefaultExperimentCreatePayload())
-                    setAssistantDialogOpen(true)
-                  }}
-                  className="btn-secondary shrink-0"
-                >
-                  清空结果
-                </button>
-              </>
-            ) : (
-              <button onClick={handleResetManualDraft} className="btn-secondary shrink-0">
-                <PencilLine size={18} />
-                恢复默认配置
-              </button>
-            )}
+            <button onClick={handleResetManualDraft} className="btn-secondary shrink-0">
+              <PencilLine size={18} />
+              恢复默认配置
+            </button>
             <button
               type="button"
               onClick={() => setDemoDialogOpen(true)}
@@ -580,75 +646,6 @@ export default function CreateExperiment() {
           </div>
         </div>
       </section>
-
-      {assistantDialogOpen && !isManualMode && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 px-4 py-6" role="dialog" aria-modal="true">
-          <div className="relative max-h-[86vh] w-full max-w-3xl overflow-y-auto rounded-[1.4rem] border border-slate-200 bg-white p-6 shadow-2xl">
-            <button
-              type="button"
-              title="关闭生成器"
-              aria-label="关闭生成器"
-              onClick={() => setAssistantDialogOpen(false)}
-              className="absolute right-4 top-4 rounded-xl border border-slate-200 bg-white p-2 text-slate-500 transition hover:text-slate-900"
-            >
-              <X size={18} />
-            </button>
-
-            <div className="mb-5 pr-10">
-              <p className="signal-label">Assisted</p>
-              <h2 className="section-title mt-2">生成实验方案</h2>
-              <p className="section-meta mt-2">描述业务目标和约束，生成后会回到主工作区继续编辑实验配置。</p>
-            </div>
-
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="md:col-span-2">
-                <label className="mb-2 block text-sm text-slate-600">业务场景</label>
-                <textarea
-                  value={form.businessScenario}
-                  onChange={(event) => setForm(current => ({ ...current, businessScenario: event.target.value }))}
-                  className="textarea min-h-[112px]"
-                  placeholder="例如：二手手机详情页标题与 CTA 文案优化，希望提升支付转化率。"
-                />
-              </div>
-              <div>
-                <label className="mb-2 block text-sm text-slate-600">目标指标</label>
-                <input
-                  value={form.targetMetric}
-                  onChange={(event) => setForm(current => ({ ...current, targetMetric: event.target.value }))}
-                  className="input"
-                  placeholder="例如：支付转化率"
-                />
-              </div>
-              <div>
-                <label className="mb-2 block text-sm text-slate-600">约束条件</label>
-                <textarea
-                  value={form.constraintsText}
-                  onChange={(event) => setForm(current => ({ ...current, constraintsText: event.target.value }))}
-                  className="textarea min-h-[92px]"
-                  placeholder="每行一个约束，例如：不要削弱价格可信度"
-                />
-              </div>
-            </div>
-
-            <div className="mt-6 flex flex-wrap justify-end gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  setResponse(null)
-                  replaceDraft(buildDefaultExperimentCreatePayload())
-                }}
-                className="btn-secondary"
-              >
-                清空结果
-              </button>
-              <button onClick={handleGenerateDraft} disabled={loading} className="btn-primary">
-                {loading ? <Loader2 size={18} className="animate-spin" /> : <Radar size={18} />}
-                生成实验方案
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {demoDialogOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 px-4 py-6" role="dialog" aria-modal="true">
@@ -676,32 +673,18 @@ export default function CreateExperiment() {
       <section className="glass-card p-5">
           <div className="mb-5 flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
             <div>
-              <p className="signal-label">Draft</p>
+              <p className="signal-label">实验草稿</p>
               <h2 className="section-title mt-2">实验配置</h2>
             </div>
             <div className="flex flex-wrap items-center gap-3 xl:justify-end">
-              {response?.guardrailStatus && (
-                <span className={`badge border ${getDraftStatusTone(response.guardrailStatus)}`}>
-                  {response.guardrailStatus}
-                </span>
-              )}
-              {shouldShowDraftEditor && (
-                <button onClick={handleCreateExperiment} disabled={creating} className="btn-primary shrink-0">
-                  {creating ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />}
-                  {isManualMode ? '直接创建实验' : '用方案创建实验'}
-                </button>
-              )}
+              <button onClick={handleCreateExperiment} disabled={creating} className="btn-primary shrink-0">
+                {creating ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />}
+                创建实验
+              </button>
             </div>
           </div>
 
-          {!shouldShowDraftEditor ? (
-            <div className="rounded-[1.6rem] border border-dashed border-slate-200 bg-slate-50 p-8 text-center">
-              <BrainCircuit size={32} className="mx-auto text-[var(--brand)]/70" />
-              <p className="mt-4 text-lg font-semibold text-slate-900">方案还没生成</p>
-              <p className="mt-2 text-sm leading-7 text-slate-500">打开生成器填写业务目标后，这里会展示摘要、风险提示和实验配置。</p>
-            </div>
-          ) : (
-            <div className="space-y-5">
+          <div className="space-y-5">
               <nav className="overflow-x-auto rounded-2xl border border-slate-200 bg-slate-50 p-1">
                 <div className="flex min-w-max gap-1">
                   {draftEditorTabs.map(tab => (
@@ -722,50 +705,49 @@ export default function CreateExperiment() {
               </nav>
 
               <div>
-                {activeDraftPanel === 'summary' && response && (
-                <div className="rounded-[1.2rem] border border-slate-200 bg-slate-50 p-5">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <span className="badge border border-blue-200 bg-blue-50 text-[var(--brand)]">
-                      <Sparkles size={14} />
-                      置信度 {confidencePercent}%
-                    </span>
-                    {(response.riskFlags || []).map(flag => (
-                      <span key={flag} className="risk-chip">
-                        <AlertTriangle size={14} />
-                        {flag}
-                      </span>
-                    ))}
-                  </div>
-                  <p className="mt-4 text-base leading-8 text-slate-600">{response.summary}</p>
-                </div>
-                )}
-
                 {activeDraftPanel === 'basics' && (
                   <div className="grid gap-4 md:grid-cols-2">
+                {importedVariantPlanName ? (
+                  <div className="flex items-center gap-3 rounded-xl border border-[#cde5d7] bg-[#f6fbf8] px-4 py-3 text-sm text-[#1e7e57] md:col-span-2">
+                    <CheckCircle2 size={18} />
+                    已导入方案“{importedVariantPlanName}”，基础信息、建议事件与指标、字段和分组已带入，请在创建前确认选择
+                    {importedVariantSummary
+                      ? `（${importedVariantSummary.eventCount} 个事件、${importedVariantSummary.metricCount} 个指标、${importedVariantSummary.fieldCount} 个字段、${importedVariantSummary.groupCount} 个分组）`
+                      : ''}。
+                  </div>
+                ) : null}
+                <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 md:col-span-2">
+                  <p className="text-sm font-semibold text-slate-900">
+                    {selectedApplicationSpace?.displayName || draftPayload.appId || '尚未选择应用空间'}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {draftPayload.appId
+                      ? `${draftPayload.appId} · 从该应用字典中选择本实验需要的事件和指标`
+                      : '实验必须归属一个应用空间'}
+                  </p>
+                </div>
                 <div>
-                  <label className="mb-2 block text-sm text-slate-600">应用 ID</label>
-                  <input
-                    list="application-space-options"
+                  <label className="mb-2 block text-sm text-slate-600">应用标识</label>
+                  <select
                     value={draftPayload.appId || ''}
                     onChange={(event) => updateDraftAppId(event.target.value)}
                     className="input"
-                    placeholder="例如：shop-app"
-                  />
-                  <datalist id="application-space-options">
+                  >
+                    <option value="">请选择应用</option>
                     {applicationSpaces.map(space => (
                       <option key={space.appId} value={space.appId}>
-                        {space.displayName || space.appId}
+                        {space.displayName || space.appId}（{space.appId}）
                       </option>
                     ))}
-                  </datalist>
+                  </select>
                 </div>
                 <div>
-                  <label className="mb-2 block text-sm text-slate-600">实验层 ID</label>
+                  <label className="mb-2 block text-sm text-slate-600">实验层标识</label>
                   <input
                     value={draftPayload.layerId || ''}
                     onChange={(event) => updateDraftField('layerId', event.target.value)}
                     className="input"
-                    placeholder="可选，例如：checkout-layer"
+                    placeholder="可选，输入实验层标识"
                   />
                 </div>
                 <div>
@@ -815,8 +797,8 @@ export default function CreateExperiment() {
                       <BookOpen size={18} />
                     </div>
                     <div>
-                      <h3 className="font-semibold text-slate-900">应用字典</h3>
-                      <p className="mt-1 text-sm text-slate-500">复用当前应用已经沉淀的事件和指标。</p>
+                      <h3 className="font-semibold text-slate-900">选择应用字典</h3>
+                      <p className="mt-1 text-sm text-slate-500">应用维护完整字典，实验只引用本次需要的事件和指标。</p>
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-3">
@@ -827,16 +809,25 @@ export default function CreateExperiment() {
                       disabled={dictionaryLoading || !normalizeText(draftPayload.appId)}
                     >
                       {dictionaryLoading ? <Loader2 size={16} className="animate-spin" /> : <BookOpen size={16} />}
-                      加载字典
+                      刷新字典
                     </button>
                     <button
                       type="button"
-                      onClick={importApplicationDictionary}
+                      onClick={selectAllDictionaryDefinitions}
                       className="btn-primary"
                       disabled={!applicationDictionary}
                     >
-                      <Download size={16} />
-                      导入定义
+                      <CheckCircle2 size={16} />
+                      全部选择
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearDictionarySelection}
+                      className="btn-secondary"
+                      disabled={eventDefinitions.length === 0 && metricDefinitions.length === 0}
+                    >
+                      <X size={16} />
+                      清空选择
                     </button>
                   </div>
                 </div>
@@ -847,131 +838,102 @@ export default function CreateExperiment() {
                     {dictionaryError}
                   </div>
                 ) : applicationDictionary ? (
-                  <div className="mt-4 grid gap-3 md:grid-cols-3">
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-                      <p className="signal-label">Events</p>
-                      <p className="signal-value text-xl">{dictionaryEventCount}</p>
+                  <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+                    <div className="grid divide-y divide-slate-200 md:grid-cols-3 md:divide-x md:divide-y-0">
+                      <div className="px-4 py-3">
+                        <p className="signal-label">应用事件</p>
+                        <p className="mt-1 text-lg font-semibold text-slate-900">已选 {eventDefinitions.length} / 共 {dictionaryEventCount}</p>
+                      </div>
+                      <div className="px-4 py-3">
+                        <p className="signal-label">应用指标</p>
+                        <p className="mt-1 text-lg font-semibold text-slate-900">已选 {metricDefinitions.length} / 共 {dictionaryMetricCount}</p>
+                      </div>
+                      <div className="px-4 py-3 text-sm text-slate-600">
+                        <p className="signal-label">当前应用</p>
+                        <p className="mt-1 font-semibold text-slate-900">{selectedApplicationSpace?.displayName || applicationDictionary.appId || draftPayload.appId}</p>
+                      </div>
                     </div>
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-                      <p className="signal-label">Metrics</p>
-                      <p className="signal-value text-xl">{dictionaryMetricCount}</p>
-                    </div>
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                      <p className="font-medium text-slate-900">{applicationDictionary.appId || draftPayload.appId}</p>
-                      <p className="mt-2">
-                        草稿已有 {eventDefinitions.length} 个事件、{metricDefinitions.length} 个指标
-                      </p>
+                    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+                      <span>指标被选择后，计算所需事件会自动加入实验。</span>
+                      <button type="button" onClick={() => navigate('/applications')} className="font-medium text-[var(--brand)] hover:underline">
+                        前往应用管理维护字典
+                      </button>
                     </div>
                   </div>
                 ) : (
                   <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm leading-7 text-slate-500">
-                    当前尚未加载应用字典。
+                    {dictionaryLoading ? '正在加载所选应用的事件和指标。' : '当前应用还没有可选择的事件和指标，请先在应用管理中维护字典。'}
                   </div>
                 )}
-
-                {dictionaryImportResult ? (
-                  <div className="mt-4 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-[var(--brand)]">
-                    已导入 {dictionaryImportResult.importedEventCount} 个事件、{dictionaryImportResult.importedMetricCount} 个指标
-                    {dictionaryImportResult.skippedMetricCount > 0
-                      ? `，跳过 ${dictionaryImportResult.skippedMetricCount} 个引用缺失事件的指标`
-                    : ''}
-                  </div>
-                ) : null}
                   </div>
                 )}
 
                 {activeDraftPanel === 'events' && (
                   <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5">
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <h3 className="font-semibold text-slate-900">事件定义</h3>
-                    <p className="mt-1 text-sm text-slate-500">每个实验必须先定义事件，后续指标和 SDK 上报都依赖这里的编码。</p>
+                    <h3 className="font-semibold text-slate-900">选择实验事件</h3>
+                    <p className="mt-1 text-sm text-slate-500">从“{selectedApplicationSpace?.displayName || draftPayload.appId || '所选应用'}”的事件字典中选择，已选 {eventDefinitions.length} 个。</p>
                   </div>
-                  <button onClick={addEventDefinition} className="btn-secondary">
-                    <Plus size={16} />
-                    新增事件
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => updateDictionarySelection({
+                        eventKeys: dictionaryEventDefinitions.map(definition => definition.key),
+                        metricKeys: metricDefinitions.map(definition => definition.key),
+                      })}
+                      className="btn-secondary"
+                      disabled={!applicationDictionary}
+                    >
+                      全选事件
+                    </button>
+                    <button type="button" onClick={clearDictionarySelection} className="btn-secondary" disabled={eventDefinitions.length === 0}>
+                      清空事件及指标
+                    </button>
+                  </div>
                 </div>
 
-                {eventDefinitions.length === 0 ? (
+                {dictionaryEventDefinitions.length === 0 ? (
                   <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm leading-7 text-slate-500">
-                    当前还没有事件定义。请先定义如 `PRODUCT_VIEW`、`PAY_SUCCESS` 这类事件。
+                    当前应用没有事件定义。请先前往应用管理维护事件字典。
                   </div>
                 ) : (
-                  <div className="mt-4 max-h-[44vh] space-y-4 overflow-y-auto pr-1">
-                    {eventDefinitions.map((eventDefinition, index) => (
-                      <div key={`event-definition-${index}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-semibold text-slate-900">事件 {index + 1}</p>
-                            {eventDefinition.label || eventDefinition.key ? (
-                              <p className="mt-1 text-xs text-slate-500">
-                                {eventDefinition.label || '未命名事件'}
-                                {eventDefinition.key ? ` · ${eventDefinition.key}` : ''}
-                              </p>
-                            ) : null}
-                          </div>
-                          <button
-                            onClick={() => removeEventDefinition(index)}
-                            className="rounded-xl border border-slate-200 bg-white p-2 text-slate-500 transition hover:text-[#b44f42]"
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        </div>
-                        <div className="mt-4 grid gap-3 md:grid-cols-2">
-                          <div>
-                            <label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">事件编码</label>
-                            <input
-                              value={eventDefinition.key || ''}
-                              onChange={(event) => updateEventDefinition(index, 'key', event.target.value.toUpperCase())}
-                              className="input"
-                              placeholder="例如：PAY_SUCCESS"
-                            />
-                          </div>
-                          <div>
-                            <label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">事件名称</label>
-                            <input
-                              value={eventDefinition.label || ''}
-                              onChange={(event) => updateEventDefinition(index, 'label', event.target.value)}
-                              className="input"
-                              placeholder="例如：支付成功"
-                            />
-                          </div>
-                          <div>
-                            <label className="mb-2 block text-xs font-medium tracking-[0.08em] text-slate-500">事件分类</label>
-                            <select
-                              value={eventDefinition.category || 'BUSINESS'}
-                              onChange={(event) => updateEventDefinition(index, 'category', event.target.value)}
-                              className="input"
-                            >
-                              {EVENT_CATEGORY_OPTIONS.map(category => (
-                                <option key={category.value} value={category.value}>{category.label}</option>
-                              ))}
-                            </select>
-                          </div>
-                          <div>
-                            <label className="mb-2 block text-xs font-medium tracking-[0.08em] text-slate-500">是否主事件</label>
-                            <select
-                              value={eventDefinition.primary ? 'true' : 'false'}
-                              onChange={(event) => updateEventDefinition(index, 'primary', event.target.value === 'true')}
-                              className="input"
-                            >
-                              <option value="false">否</option>
-                              <option value="true">是</option>
-                            </select>
-                          </div>
-                        </div>
-                        <div className="mt-3">
-                          <label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">事件说明</label>
+                  <div className="mt-4 grid max-h-[48vh] gap-3 overflow-y-auto pr-1 lg:grid-cols-2">
+                    {dictionaryEventDefinitions.map((eventDefinition) => {
+                      const eventKey = normalizeText(eventDefinition.key).toUpperCase()
+                      const selected = selectedEventKeys.has(eventKey)
+                      const dependentMetricNames = metricDefinitions
+                        .filter(metric => getMetricReferencedEventKeys(metric).includes(eventKey))
+                        .map(metric => metric.name || metric.key)
+                      return (
+                        <label
+                          key={eventKey}
+                          className={`flex cursor-pointer gap-3 rounded-xl border p-4 transition ${selected
+                            ? 'border-blue-200 bg-blue-50'
+                            : 'border-slate-200 bg-slate-50 hover:border-slate-300'
+                          }`}
+                        >
                           <input
-                            value={eventDefinition.description || ''}
-                            onChange={(event) => updateEventDefinition(index, 'description', event.target.value)}
-                            className="input"
-                            placeholder="说明这个事件何时上报"
+                            type="checkbox"
+                            checked={selected}
+                            onChange={() => toggleDictionaryEvent(eventKey)}
+                            className="mt-1 h-4 w-4 accent-blue-600"
                           />
-                        </div>
-                      </div>
-                    ))}
+                          <span className="min-w-0 flex-1">
+                            <span className="flex flex-wrap items-center gap-2">
+                              <span className="font-semibold text-slate-900">{eventDefinition.label || '未命名事件'}</span>
+                              <span className="rounded-full bg-white px-2 py-0.5 text-xs text-slate-500">{getOptionLabel(EVENT_CATEGORY_OPTIONS, eventDefinition.category, '业务事件')}</span>
+                              {eventDefinition.primary ? <span className="rounded-full bg-[#eaf7f0] px-2 py-0.5 text-xs text-[#1e7e57]">核心事件</span> : null}
+                            </span>
+                            <span className="mt-1 block text-xs text-slate-500">事件标识：{eventKey}</span>
+                            <span className="mt-2 block text-sm text-slate-600">{eventDefinition.description || '暂无事件说明'}</span>
+                            {dependentMetricNames.length > 0 ? (
+                              <span className="mt-2 block text-xs font-medium text-[var(--brand)]">已被指标“{dependentMetricNames.join('、')}”使用</span>
+                            ) : null}
+                          </span>
+                        </label>
+                      )
+                    })}
                   </div>
                 )}
                   </div>
@@ -979,159 +941,97 @@ export default function CreateExperiment() {
 
                 {activeDraftPanel === 'metrics' && (
                   <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5">
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <h3 className="font-semibold text-slate-900">指标定义</h3>
-                    <p className="mt-1 text-sm text-slate-500">先选统计方式，再选择要统计的事件。页面只显示中文说明，保存时仍会用规范编码提交。</p>
+                    <h3 className="font-semibold text-slate-900">选择实验指标</h3>
+                    <p className="mt-1 text-sm text-slate-500">从应用指标中选择本次观察口径，并指定唯一主指标。</p>
                   </div>
-                  <button onClick={addMetricDefinition} className="btn-secondary">
-                    <Plus size={16} />
-                    新增指标
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => updateDictionarySelection({
+                        eventKeys: eventDefinitions.map(definition => definition.key),
+                        metricKeys: dictionaryMetricDefinitions.map(definition => definition.key),
+                      })}
+                      className="btn-secondary"
+                      disabled={!applicationDictionary}
+                    >
+                      全选指标
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateDictionarySelection({
+                        eventKeys: eventDefinitions.map(definition => definition.key),
+                        metricKeys: [],
+                      })}
+                      className="btn-secondary"
+                      disabled={metricDefinitions.length === 0}
+                    >
+                      清空指标
+                    </button>
+                  </div>
                 </div>
 
-                {metricDefinitions.length === 0 ? (
+                {dictionaryMetricDefinitions.length === 0 ? (
                   <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm leading-7 text-slate-500">
-                    当前还没有指标定义。你可以新增“支付率”“咨询率”“下单人数”这类更贴近业务的指标。
+                    当前应用没有指标定义。请先前往应用管理维护指标字典。
                   </div>
                 ) : (
-                  <div className="mt-4 max-h-[44vh] space-y-4 overflow-y-auto pr-1">
-                    {metricDefinitions.map((metricDefinition, index) => (
-                      <div key={`metric-definition-${index}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-semibold text-slate-900">指标 {index + 1}</p>
-                            {metricDefinition.name || metricDefinition.key ? (
-                              <p className="mt-1 text-xs text-slate-500">
-                                {metricDefinition.name || '未命名指标'}
-                                {metricDefinition.key ? ` · ${metricDefinition.key}` : ''}
-                              </p>
-                            ) : null}
-                          </div>
-                          <button
-                            onClick={() => removeMetricDefinition(index)}
-                            className="rounded-xl border border-slate-200 bg-white p-2 text-slate-500 transition hover:text-[#b44f42]"
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        </div>
-                        <div className="mt-4 grid gap-3 md:grid-cols-2">
-                          <div>
-                            <label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">指标编码</label>
+                  <div className="mt-4 grid max-h-[48vh] gap-3 overflow-y-auto pr-1 lg:grid-cols-2">
+                    {dictionaryMetricDefinitions.map((metricDefinition) => {
+                      const metricKey = normalizeText(metricDefinition.key).toUpperCase()
+                      const selectedMetric = metricDefinitions.find(definition => normalizeText(definition.key).toUpperCase() === metricKey)
+                      const selected = selectedMetricKeys.has(metricKey)
+                      const numeratorLabel = dictionaryEventLabels.get(normalizeText(metricDefinition.numeratorEventType).toUpperCase()) || '未配置事件'
+                      const denominatorLabel = metricDefinition.denominatorType === 'EVENT_COUNT'
+                        ? dictionaryEventLabels.get(normalizeText(metricDefinition.denominatorEventType).toUpperCase()) || '未配置事件'
+                        : getOptionLabel(METRIC_DENOMINATOR_TYPE_OPTIONS, metricDefinition.denominatorType, '所选统计口径')
+                      return (
+                        <div
+                          key={metricKey}
+                          className={`rounded-xl border p-4 transition ${selected
+                            ? 'border-blue-200 bg-blue-50'
+                            : 'border-slate-200 bg-slate-50 hover:border-slate-300'
+                          }`}
+                        >
+                          <label className="flex cursor-pointer gap-3">
                             <input
-                              value={metricDefinition.key || ''}
-                              onChange={(event) => updateMetricDefinition(index, 'key', event.target.value.toUpperCase())}
-                              className="input"
-                              placeholder="例如：PAYMENT_RATE"
+                              type="checkbox"
+                              checked={selected}
+                              onChange={() => toggleDictionaryMetric(metricKey)}
+                              className="mt-1 h-4 w-4 accent-blue-600"
                             />
-                          </div>
-                          <div>
-                            <label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">指标名称</label>
-                            <input
-                              value={metricDefinition.name || ''}
-                              onChange={(event) => updateMetricDefinition(index, 'name', event.target.value)}
-                              className="input"
-                              placeholder="例如：支付率"
-                            />
-                          </div>
-                          <div>
-                            <label className="mb-2 block text-xs font-medium tracking-[0.08em] text-slate-500">统计方式</label>
-                            <select
-                              value={metricDefinition.aggregationType || 'RATE'}
-                              onChange={(event) => updateMetricDefinition(index, 'aggregationType', event.target.value)}
-                              className="input"
-                            >
-                              {METRIC_AGGREGATION_TYPE_OPTIONS.map(type => (
-                                <option key={type.value} value={type.value}>{type.label}</option>
-                              ))}
-                            </select>
-                          </div>
-                          <div>
-                            <label className="mb-2 block text-xs font-medium tracking-[0.08em] text-slate-500">统计哪个事件</label>
-                            <select
-                              value={metricDefinition.numeratorEventType || ''}
-                              onChange={(event) => updateMetricDefinition(index, 'numeratorEventType', event.target.value)}
-                              className="input"
-                            >
-                              <option value="">请选择</option>
-                              {availableEventOptions.map(eventOption => (
-                                <option key={eventOption.value} value={eventOption.value}>{eventOption.label}</option>
-                              ))}
-                            </select>
-                          </div>
-                          <div>
-                            <label className="mb-2 block text-xs font-medium tracking-[0.08em] text-slate-500">
-                              {metricDefinition.aggregationType === 'COUNT' ? '数量口径' : '分母口径'}
+                            <span className="min-w-0 flex-1">
+                              <span className="flex flex-wrap items-center gap-2">
+                                <span className="font-semibold text-slate-900">{metricDefinition.name || '未命名指标'}</span>
+                                {metricDefinition.guardrailMetric ? <span className="rounded-full bg-[#fff4e8] px-2 py-0.5 text-xs text-[#9a6026]">建议护栏</span> : null}
+                              </span>
+                              <span className="mt-1 block text-xs text-slate-500">指标标识：{metricKey}</span>
+                              <span className="mt-2 block text-sm text-slate-600">
+                                {metricDefinition.aggregationType === 'COUNT'
+                                  ? `统计“${numeratorLabel}”的发生次数`
+                                  : `用“${numeratorLabel}”除以“${denominatorLabel}”`}
+                              </span>
+                              <span className="mt-1 block text-xs text-slate-500">
+                                统计方式：{getOptionLabel(METRIC_AGGREGATION_TYPE_OPTIONS, metricDefinition.aggregationType, '比率')}
+                              </span>
+                            </span>
+                          </label>
+                          {selected ? (
+                            <label className="mt-3 flex cursor-pointer items-center gap-2 border-t border-blue-100 pt-3 text-sm font-medium text-slate-700">
+                              <input
+                                type="radio"
+                                name="primary-metric"
+                                checked={Boolean(selectedMetric?.primaryMetric)}
+                                onChange={() => selectPrimaryMetric(metricKey)}
+                                className="h-4 w-4 accent-blue-600"
+                              />
+                              设为本实验主指标
                             </label>
-                            <select
-                              value={metricDefinition.denominatorType || 'EVENT_COUNT'}
-                              onChange={(event) => updateMetricDefinition(index, 'denominatorType', event.target.value)}
-                              className="input"
-                              disabled={metricDefinition.aggregationType === 'COUNT'}
-                            >
-                              {METRIC_DENOMINATOR_TYPE_OPTIONS.map(type => (
-                                <option key={type.value} value={type.value}>{type.label}</option>
-                              ))}
-                            </select>
-                          </div>
-                          <div>
-                            <label className="mb-2 block text-xs font-medium tracking-[0.08em] text-slate-500">分母事件</label>
-                            <select
-                              value={metricDefinition.denominatorEventType || ''}
-                              onChange={(event) => updateMetricDefinition(index, 'denominatorEventType', event.target.value)}
-                              className="input"
-                              disabled={metricDefinition.aggregationType !== 'RATE' || metricDefinition.denominatorType !== 'EVENT_COUNT'}
-                            >
-                              <option value="">请选择</option>
-                              {availableEventOptions.map(eventOption => (
-                                <option key={eventOption.value} value={eventOption.value}>{eventOption.label}</option>
-                              ))}
-                            </select>
-                          </div>
+                          ) : null}
                         </div>
-                        <div className="mt-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
-                          {metricDefinition.aggregationType === 'COUNT'
-                            ? `当前是数量指标，会直接统计「${availableEventOptions.find(option => option.value === metricDefinition.numeratorEventType)?.label || '所选事件'}」的发生次数。`
-                            : `当前是比率指标，会用「${availableEventOptions.find(option => option.value === metricDefinition.numeratorEventType)?.label || '所选事件'}」除以「${metricDefinition.denominatorType === 'EVENT_COUNT'
-                              ? availableEventOptions.find(option => option.value === metricDefinition.denominatorEventType)?.label || '所选分母事件'
-                              : getOptionLabel(METRIC_DENOMINATOR_TYPE_OPTIONS, metricDefinition.denominatorType, '所选口径')
-                            }」计算结果。`}
-                        </div>
-                        <div className="mt-3 grid gap-3 md:grid-cols-[0.5fr_0.25fr_0.25fr]">
-                          <div>
-                            <label className="mb-2 block text-xs font-medium tracking-[0.08em] text-slate-500">指标说明</label>
-                            <input
-                              value={metricDefinition.description || ''}
-                              onChange={(event) => updateMetricDefinition(index, 'description', event.target.value)}
-                              className="input"
-                              placeholder="说明该指标衡量什么"
-                            />
-                          </div>
-                          <div>
-                            <label className="mb-2 block text-xs font-medium tracking-[0.08em] text-slate-500">是否主指标</label>
-                            <select
-                              value={metricDefinition.primaryMetric ? 'true' : 'false'}
-                              onChange={(event) => updateMetricDefinition(index, 'primaryMetric', event.target.value === 'true')}
-                              className="input"
-                            >
-                              <option value="false">否</option>
-                              <option value="true">是</option>
-                            </select>
-                          </div>
-                          <div>
-                            <label className="mb-2 block text-xs font-medium tracking-[0.08em] text-slate-500">是否护栏指标</label>
-                            <select
-                              value={metricDefinition.guardrailMetric ? 'true' : 'false'}
-                              onChange={(event) => updateMetricDefinition(index, 'guardrailMetric', event.target.value === 'true')}
-                              className="input"
-                            >
-                              <option value="false">否</option>
-                              <option value="true">是</option>
-                            </select>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 )}
                   </div>
@@ -1152,7 +1052,7 @@ export default function CreateExperiment() {
 
                 {groupConfigSchema.length === 0 ? (
                   <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm leading-7 text-slate-500">
-                    当前还没有配置字段定义。你可以直接新增 `mainTitle`、`subtitle`、`showQualityBadge` 这类字段。
+                    当前还没有配置字段定义。可以新增标题、卖点、保障信息等页面配置字段。
                   </div>
                 ) : (
                   <div className="mt-4 max-h-[44vh] space-y-4 overflow-y-auto pr-1">
@@ -1170,12 +1070,12 @@ export default function CreateExperiment() {
 
                         <div className="mt-4 grid gap-3 md:grid-cols-2">
                           <div>
-                            <label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">字段 key</label>
+                            <label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">字段标识</label>
                             <input
                               value={field.key || ''}
                               onChange={(event) => updateSchemaField(index, 'key', event.target.value)}
                               className="input"
-                              placeholder="例如：mainTitle"
+                              placeholder="输入字段标识"
                             />
                           </div>
                           <div>
@@ -1206,7 +1106,7 @@ export default function CreateExperiment() {
                                 value={formatEditableValue(field.defaultValue, field.valueType)}
                                 onChange={(event) => updateSchemaField(index, 'defaultValue', event.target.value)}
                                 className="textarea min-h-[110px]"
-                                placeholder={field.valueType === 'OBJECT' ? '{"color":"blue"}' : '["官方质检"]'}
+                                placeholder={field.valueType === 'OBJECT' ? '{"颜色":"蓝色"}' : '["官方质检"]'}
                               />
                             ) : (
                               <input
@@ -1251,9 +1151,21 @@ export default function CreateExperiment() {
                 {activeDraftPanel === 'groups' && (
                   <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
                 <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5">
-                  <div className="flex items-center gap-3">
-                    <CheckCircle2 size={18} className="text-[#1e7e57]" />
-                    <h3 className="font-semibold text-slate-900">实验组配置</h3>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <CheckCircle2 size={18} className="text-[#1e7e57]" />
+                      <h3 className="font-semibold text-slate-900">实验组配置</h3>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" onClick={addSchemaFieldFromGroups} className="btn-secondary py-2">
+                        <Plus size={16} />
+                        新增字段
+                      </button>
+                      <button type="button" onClick={addExperimentGroup} className="btn-primary py-2">
+                        <Plus size={16} />
+                        新增实验组
+                      </button>
+                    </div>
                   </div>
                   <div className="mt-4 max-h-[48vh] space-y-3 overflow-y-auto pr-1">
                     {draftGroups.map((group, index) => {
@@ -1263,9 +1175,10 @@ export default function CreateExperiment() {
 
                       return (
                         <div key={groupKey} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                          <div className="grid gap-3 md:grid-cols-2">
+                          <div className="flex items-start gap-3">
+                            <div className="grid min-w-0 flex-1 gap-3 md:grid-cols-2">
                             <div>
-                              <label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">实验组 ID</label>
+                              <label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">实验组标识</label>
                               <input
                                 value={group.id || ''}
                                 onChange={(event) => updateGroupField(index, 'id', event.target.value)}
@@ -1275,11 +1188,22 @@ export default function CreateExperiment() {
                             <div>
                               <label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">实验组名称</label>
                               <input
-                                value={group.name || ''}
+                              value={localizeSystemText(group.name || '')}
                                 onChange={(event) => updateGroupField(index, 'name', event.target.value)}
                                 className="input"
                               />
                             </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => removeExperimentGroup(index)}
+                              disabled={draftGroups.length <= 2}
+                              className="mt-6 rounded-xl border border-slate-200 bg-white p-3 text-slate-400 transition hover:border-[#e7c8c4] hover:text-[#b44f42] disabled:cursor-not-allowed disabled:opacity-35"
+                              title={draftGroups.length <= 2 ? '至少保留两个实验组' : '删除实验组'}
+                              aria-label="删除实验组"
+                            >
+                              <Trash2 size={16} />
+                            </button>
                           </div>
 
                           <div className="mt-3">
@@ -1303,8 +1227,8 @@ export default function CreateExperiment() {
                             <div>
                               <p className="text-sm font-medium text-slate-900">字段配置</p>
                               <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-500">
-                                <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{summary.groupName}</span>
-                                <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{summary.groupId || '未设置 ID'}</span>
+                                <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{localizeSystemText(summary.groupName)}</span>
+                                <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{localizeSystemText(summary.groupId) || '未设置标识'}</span>
                                 <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">流量 {summary.trafficPercent}</span>
                                 <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{summary.configCount} 个配置项</span>
                               </div>
@@ -1320,7 +1244,7 @@ export default function CreateExperiment() {
                                     <div className="mb-2 flex items-center justify-between gap-3">
                                       <div>
                                         <p className="text-sm font-medium text-slate-900">{field.label || field.key || '未命名字段'}</p>
-                                        <p className="text-xs text-slate-500">{field.key || '请先填写字段 key'} · {field.valueType}</p>
+                                        <p className="text-xs text-slate-500">{field.key || '请先填写字段标识'} · {getValueTypeLabel(field.valueType)}</p>
                                       </div>
                                       {field.required && (
                                         <span className="badge border border-[#ecd8bf] bg-[#fff8ef] text-[#9a6026]">必填</span>
@@ -1331,7 +1255,7 @@ export default function CreateExperiment() {
                                         value={formatEditableValue(group.config?.[field.key] ?? field.defaultValue, field.valueType)}
                                         onChange={(event) => updateGroupConfigValue(index, field.key, event.target.value)}
                                         className="textarea min-h-[110px]"
-                                        placeholder={field.valueType === 'OBJECT' ? '{"theme":"standard"}' : '["标签1","标签2"]'}
+                                        placeholder={field.valueType === 'OBJECT' ? '{"主题":"标准"}' : '["标签1","标签2"]'}
                                         disabled={!field.key}
                                       />
                                     ) : field.valueType === 'BOOLEAN' ? (
@@ -1342,8 +1266,8 @@ export default function CreateExperiment() {
                                         disabled={!field.key}
                                       >
                                         <option value="">未设置</option>
-                                        <option value="true">true</option>
-                                        <option value="false">false</option>
+                                        <option value="true">是</option>
+                                        <option value="false">否</option>
                                       </select>
                                     ) : (
                                       <input
@@ -1371,7 +1295,13 @@ export default function CreateExperiment() {
                                 ))}
                               </div>
                             ) : (
-                              <div className="mt-4 rounded-xl bg-white px-4 py-3 text-sm text-slate-500">暂无实验组配置</div>
+                              <div className="mt-4 flex items-center justify-between gap-3 rounded-xl bg-white px-4 py-3 text-sm text-slate-500">
+                                <span>暂无实验组配置</span>
+                                <button type="button" onClick={addSchemaFieldFromGroups} className="btn-secondary py-2">
+                                  <Plus size={16} />
+                                  新增字段
+                                </button>
+                              </div>
                             )
                           ) : null}
                         </div>
@@ -1393,11 +1323,9 @@ export default function CreateExperiment() {
                         onChange={(event) => updateTrafficField('strategy', event.target.value)}
                         className="input"
                       >
-                        <option value="HASH">HASH</option>
-                        <option value="RANDOM">RANDOM</option>
-                        <option value="RULE">RULE</option>
-                        <option value="THOMPSON_SAMPLING">THOMPSON_SAMPLING</option>
-                        <option value="UCB">UCB</option>
+                        {TRAFFIC_STRATEGY_OPTIONS.map(option => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
                       </select>
                     </div>
 
@@ -1419,7 +1347,9 @@ export default function CreateExperiment() {
                       <div className="mt-2 space-y-2">
                         {(draftPayload.traffic?.allocation || []).map(item => (
                           <div key={item.group} className="flex items-center justify-between text-sm">
-                            <span>{item.group}</span>
+                            <span>{localizeSystemText(
+                              draftGroups.find(group => group.id === item.group)?.name || item.group
+                            )}</span>
                             <span>{Math.round((item.ratio || 0) * 100)}%</span>
                           </div>
                         ))}
@@ -1431,7 +1361,6 @@ export default function CreateExperiment() {
                 )}
               </div>
             </div>
-          )}
       </section>
     </div>
   )

@@ -181,7 +181,7 @@ test('getReplayPlanModeLabel maps known plan modes', () => {
   )
   assert.equal(
     getReplayPlanModeLabel({ replayMode: 'FILTERED_DERIVED_COPY_REPLAY' }),
-    '筛选复制 replay'
+    '筛选复制重放'
   )
 })
 
@@ -194,7 +194,7 @@ test('replay job labels expose persisted audit scope', () => {
     eventTypes: ['PAY_SUCCESS', 'PRODUCT_VIEW']
   }
 
-  assert.equal(getReplayModeLabel(replayJob), '筛选复制 replay')
+  assert.equal(getReplayModeLabel(replayJob), '筛选复制重放')
   assert.equal(getReplayFactScopeLabel(replayJob), '仅事件')
   assert.equal(getReplayEventTypesLabel(replayJob), 'PAY_SUCCESS, PRODUCT_VIEW')
   assert.equal(getReplayEventTypesLabel({ eventTypes: [] }), '全部')

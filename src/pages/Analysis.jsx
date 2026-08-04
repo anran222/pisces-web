@@ -29,6 +29,15 @@ import { analysisAPI, experimentAPI } from '../services/api'
 import { buildGroupChartData, buildTimelineChartData } from '../utils/analysisTransformers'
 import { buildDecisionWorkspaceModel } from '../utils/aiDecisionTransformers'
 import { resolvePrimaryMetricDefinition } from '../utils/experimentDetailUtils'
+import {
+  getDecisionLabel,
+  getExecutionModeLabel,
+  getExperimentStatusLabel,
+  getGuardrailStatusLabel,
+  getMetricKeyLabel,
+  getRiskFlagLabel,
+  localizeSystemText,
+} from '../utils/uiLabels'
 
 const CHART_COLORS = ['#ff8b5d', '#4cc9f0', '#a78bfa', '#34d399', '#facc15']
 
@@ -193,7 +202,8 @@ export default function Analysis() {
     [timeline, primaryMetricDefinition]
   )
   const timelineKeys = useMemo(() => Object.keys(timelineData[0] || {}).filter(key => key !== 'time'), [timelineData])
-  const primaryMetricLabel = primaryMetricDefinition?.name || statistics?.summary?.primaryMetricKey || '主要指标'
+  const primaryMetricLabel = primaryMetricDefinition?.name
+    || getMetricKeyLabel(statistics?.summary?.primaryMetricKey)
   const isPrimaryMetricRate = primaryMetricDefinition?.aggregationType === 'RATE'
   const baselinePrimaryMetricValue = useMemo(() => {
     const baselineStats = Object.values(statistics?.groupStatistics || {})
@@ -226,7 +236,7 @@ export default function Analysis() {
       anchor.click()
       URL.revokeObjectURL(url)
     } catch (error) {
-      alert('导出失败: ' + (error.response?.data?.message || error.message))
+      alert('导出失败：' + localizeSystemText(error.response?.data?.message || error.message))
     } finally {
       setExporting(false)
     }
@@ -236,10 +246,10 @@ export default function Analysis() {
     try {
       setEventPipelineActionLoading('retry')
       const response = await analysisAPI.retryDeadEvents(id)
-      alert(response.message || response.data?.message || '死信事件已重新投递')
+      alert(localizeSystemText(response.message || response.data?.message || '死信事件已重新投递'))
       await loadData()
     } catch (error) {
-      alert('重投死信失败: ' + (error.response?.data?.message || error.message))
+      alert('重投死信失败：' + localizeSystemText(error.response?.data?.message || error.message))
     } finally {
       setEventPipelineActionLoading('')
     }
@@ -249,10 +259,10 @@ export default function Analysis() {
     try {
       setEventPipelineActionLoading('replay')
       const response = await analysisAPI.replayEventPipeline(id)
-      alert(response.message || response.data?.message || '事件管道派生数据已重建')
+      alert(localizeSystemText(response.message || response.data?.message || '事件管道派生数据已重建'))
       await loadData()
     } catch (error) {
-      alert('重放派生数据失败: ' + (error.response?.data?.message || error.message))
+      alert('重放派生数据失败：' + localizeSystemText(error.response?.data?.message || error.message))
     } finally {
       setEventPipelineActionLoading('')
     }
@@ -266,7 +276,7 @@ export default function Analysis() {
       setEventReplayPlan(response.data || response)
     } catch (error) {
       setEventReplayPlan(null)
-      setEventReplayPlanError(error.response?.data?.message || error.message || '重放计划生成失败')
+      setEventReplayPlanError(localizeSystemText(error.response?.data?.message || error.message || '重放计划生成失败'))
     } finally {
       setEventReplayPlanLoading(false)
     }
@@ -279,10 +289,10 @@ export default function Analysis() {
       const response = repairingSegment
         ? await analysisAPI.repairEventMaterializationSegment(id, segmentIndex, request)
         : await analysisAPI.repairEventMaterialization(id, request)
-      alert(response.message || response.data?.message || '缺失派生物化账本已修复')
+      alert(localizeSystemText(response.message || response.data?.message || '缺失派生物化账本已修复'))
       await loadData()
     } catch (error) {
-      alert('修复缺账本失败: ' + (error.response?.data?.message || error.message))
+      alert('修复缺账本失败：' + localizeSystemText(error.response?.data?.message || error.message))
     } finally {
       setEventPipelineActionLoading('')
     }
@@ -292,10 +302,10 @@ export default function Analysis() {
     try {
       setEventPipelineActionLoading('cancel-replay')
       const response = await analysisAPI.cancelEventReplayJob(id, replayJobId)
-      alert(response.message || response.data?.message || '事件重放任务已取消')
+      alert(localizeSystemText(response.message || response.data?.message || '事件重放任务已取消'))
       await loadData()
     } catch (error) {
-      alert('取消重放任务失败: ' + (error.response?.data?.message || error.message))
+      alert('取消重放任务失败：' + localizeSystemText(error.response?.data?.message || error.message))
     } finally {
       setEventPipelineActionLoading('')
     }
@@ -347,15 +357,15 @@ export default function Analysis() {
       <section className="glass-card p-6">
         <div className="flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
           <div className="max-w-3xl">
-            <div className="eyebrow mb-3">Summary</div>
+            <div className="eyebrow mb-3">决策摘要</div>
             <h1 className="text-[2rem] font-bold tracking-[-0.04em] text-slate-900">{experiment.name}</h1>
-            <p className="mt-2 text-base leading-8 text-slate-600">{workspaceModel.hero.summary}</p>
+            <p className="mt-2 text-base leading-8 text-slate-600">{localizeSystemText(workspaceModel.hero.summary)}</p>
             <div className="mt-4 flex flex-wrap gap-3">
               <span className={`badge border ${getDecisionClassName(workspaceModel.hero.decision)}`}>
-                决策 {workspaceModel.hero.decision}
+                决策 {getDecisionLabel(workspaceModel.hero.decision)}
               </span>
               <span className={`badge border ${getGuardrailClassName(workspaceModel.hero.guardrailStatus)}`}>
-                护栏 {workspaceModel.hero.guardrailStatus}
+                护栏 {getGuardrailStatusLabel(workspaceModel.hero.guardrailStatus)}
               </span>
               <span className="badge border border-slate-200 bg-slate-50 text-slate-700">
                 置信度 {workspaceModel.hero.confidence == null
@@ -372,11 +382,11 @@ export default function Analysis() {
             </div>
             <div className="signal-card-tight">
               <p className="signal-label">最佳实验组</p>
-              <p className="signal-value text-[var(--brand)]">{workspaceModel.hero.bestGroup}</p>
+              <p className="signal-value text-[var(--brand)]">{localizeSystemText(workspaceModel.hero.bestGroup)}</p>
             </div>
             <div className="signal-card-tight">
               <p className="signal-label">实验状态</p>
-              <p className="mt-3 text-lg font-bold text-[#9a6026]">{experiment.status}</p>
+              <p className="mt-3 text-lg font-bold text-[#9a6026]">{getExperimentStatusLabel(experiment.status)}</p>
             </div>
           </div>
         </div>
@@ -437,14 +447,14 @@ export default function Analysis() {
               {(workspaceModel.riskFlags.length > 0 ? workspaceModel.riskFlags : ['暂无风险标记']).map(flag => (
                 <span key={flag} className="risk-chip">
                   <AlertTriangle size={14} />
-                  {flag}
+                  {getRiskFlagLabel(flag)}
                 </span>
               ))}
             </div>
             <div className="mt-5 space-y-3">
               {(workspaceModel.blockingIssues.length > 0 ? workspaceModel.blockingIssues : ['当前没有明显的阻塞项']).map(issue => (
                 <div key={issue} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-7 text-slate-600">
-                  {issue}
+                  {localizeSystemText(issue)}
                 </div>
               ))}
             </div>
@@ -465,10 +475,10 @@ export default function Analysis() {
                 workspaceModel.actions.map(action => (
                   <div key={action.title + action.action} className="rounded-[1.2rem] border border-slate-200 bg-white p-5">
                     <div className="flex flex-wrap items-center gap-3">
-                      <h3 className="font-semibold text-slate-900">{action.title}</h3>
-                      <span className="badge border border-[#ecd8bf] bg-[#fff8ef] text-[#9a6026]">{action.executionMode}</span>
+                      <h3 className="font-semibold text-slate-900">{localizeSystemText(action.title)}</h3>
+                      <span className="badge border border-[#ecd8bf] bg-[#fff8ef] text-[#9a6026]">{getExecutionModeLabel(action.executionMode)}</span>
                     </div>
-                    <p className="mt-3 text-sm leading-7 text-slate-600">{action.action}</p>
+                    <p className="mt-3 text-sm leading-7 text-slate-600">{localizeSystemText(action.action)}</p>
                   </div>
                 ))
               )}
@@ -488,7 +498,7 @@ export default function Analysis() {
             <div className="fact-tile">
                 <p className="text-sm text-slate-500">主要指标</p>
                 <p className="mt-2 text-lg font-bold text-slate-900">
-                  {primaryMetricDefinition?.name || workspaceModel.facts.primaryMetricKey}
+                  {primaryMetricDefinition?.name || getMetricKeyLabel(workspaceModel.facts.primaryMetricKey)}
                 </p>
                 {primaryMetricDefinition?.key ? (
                   <p className="mt-1 text-xs text-slate-500">{primaryMetricDefinition.key}</p>
@@ -518,7 +528,7 @@ export default function Analysis() {
                 <p className="text-sm text-slate-500">{primaryMetricLabel}提升</p>
                 <p className="mt-2 text-lg font-bold text-[#1e7e57]">
                   {primaryMetricLift != null && isPrimaryMetricRate
-                    ? `+${(primaryMetricLift * 100).toFixed(2)}pp`
+                    ? `+${(primaryMetricLift * 100).toFixed(2)} 个百分点`
                     : '-'}
                 </p>
                 {primaryMetricLiftPercent != null ? (
@@ -527,14 +537,14 @@ export default function Analysis() {
             </div>
             <div className="fact-tile">
                 <p className="text-sm text-slate-500">最佳实验组</p>
-                <p className="mt-2 text-lg font-bold text-[var(--brand)]">{workspaceModel.hero.bestGroup}</p>
+                <p className="mt-2 text-lg font-bold text-[var(--brand)]">{localizeSystemText(workspaceModel.hero.bestGroup)}</p>
             </div>
             <div className="fact-tile">
                 <p className="text-sm text-slate-500">分析就绪</p>
                 <p className="mt-2 text-lg font-bold text-slate-900">{workspaceModel.facts.analysisReady ? '已就绪' : '未就绪'}</p>
             </div>
             <div className="fact-tile">
-                <p className="text-sm text-slate-500">SRM 检测</p>
+                <p className="text-sm text-slate-500">样本比例异常检测</p>
                 <p className="mt-2 text-lg font-bold text-slate-900">{workspaceModel.facts.srmDetected ? '已发现' : '未发现'}</p>
             </div>
           </div>
@@ -634,6 +644,7 @@ export default function Analysis() {
                     key={key}
                     type="monotone"
                     dataKey={key}
+                    name={localizeSystemText(key)}
                     stroke={CHART_COLORS[index % CHART_COLORS.length]}
                     strokeWidth={2.5}
                     dot={false}

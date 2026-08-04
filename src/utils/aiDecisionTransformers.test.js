@@ -20,6 +20,7 @@ import {
   METRIC_DENOMINATOR_TYPE_OPTIONS,
   buildVariantCandidatePayload,
   normalizeVariantCandidates,
+  normalizeVariantPlans,
   normalizeVariantGenerationModelEvidence
 } from './aiDecisionTransformers.js'
 
@@ -180,6 +181,7 @@ test('buildDefaultExperimentCreatePayload creates editable manual draft', () => 
 
 test('buildExperimentDraftFromResponse maps experiment response into editable draft', () => {
   const payload = buildExperimentDraftFromResponse({
+    appId: 'shop-app',
     name: '二手手机实验',
     description: '详情页编辑草稿',
     layerId: 'detail-page',
@@ -195,17 +197,17 @@ test('buildExperimentDraftFromResponse maps experiment response into editable dr
       { key: 'mainTitle', label: '主标题', valueType: 'STRING', required: true, defaultValue: '默认标题' }
     ],
     groups: {
-      control: {
-        id: 'control',
-        name: '对照组',
-        trafficRatio: 0.5,
-        config: { mainTitle: '原版标题' }
-      },
       variant_a: {
         id: 'variant_a',
         name: '实验组A',
         trafficRatio: 0.5,
         config: { mainTitle: '新版标题' }
+      },
+      control: {
+        id: 'control',
+        name: '对照组',
+        trafficRatio: 0.5,
+        config: { mainTitle: '原版标题' }
       }
     },
     traffic: {
@@ -219,13 +221,36 @@ test('buildExperimentDraftFromResponse maps experiment response into editable dr
   })
 
   assert.equal(payload.name, '二手手机实验')
+  assert.equal(payload.appId, 'shop-app')
   assert.equal(payload.layerId, 'detail-page')
   assert.equal(payload.startTime, '2026-03-21T10:30')
   assert.equal(payload.eventDefinitions[0].key, 'PRODUCT_VIEW')
   assert.equal(payload.metricDefinitions[0].key, 'PAYMENT_RATE')
   assert.equal(payload.groupConfigSchema[0].key, 'mainTitle')
   assert.equal(payload.groups.length, 2)
+  assert.deepEqual(payload.groups.map(group => group.id), ['control', 'variant_a'])
   assert.equal(payload.groups[0].config.mainTitle, '原版标题')
+})
+
+test('buildExperimentCreatePayload rebuilds allocation after groups change', () => {
+  const payload = buildExperimentCreatePayload({
+    experimentDraft: {
+      groups: [
+        { id: 'control', name: '对照组', trafficRatio: 0.4, config: {} },
+        { id: 'variant_a', name: '实验组A', trafficRatio: 0.6, config: {} }
+      ],
+      traffic: {
+        strategy: 'HASH',
+        totalTraffic: 1,
+        allocation: [{ group: 'deleted_group', ratio: 1 }]
+      }
+    }
+  })
+
+  assert.deepEqual(payload.traffic.allocation, [
+    { group: 'control', ratio: 0.4 },
+    { group: 'variant_a', ratio: 0.6 }
+  ])
 })
 
 test('buildEmptyGroupConfigField creates editable schema draft', () => {
@@ -288,7 +313,7 @@ test('option labels should be localized for create experiment form', () => {
     { value: 'INTEGER', label: '整数' },
     { value: 'BOOLEAN', label: '布尔值' },
     { value: 'OBJECT', label: '对象' },
-    { value: 'JSON', label: 'JSON' }
+    { value: 'JSON', label: '结构化数据' }
   ])
 })
 
@@ -448,6 +473,43 @@ test('buildVariantCandidatePayload adds real reference image only when provided'
   })
 })
 
+test('buildVariantCandidatePayload carries complete experiment plan context', () => {
+  const payload = buildVariantCandidatePayload({
+    variantType: 'TEXT',
+    appId: 'shop-app',
+    applicationName: '二手手机商城',
+    businessScenario: '二手手机售卖',
+    placement: '商品详情页首屏',
+    goal: '提升加购转化',
+    audience: '价格敏感但关注质检保障的用户',
+    baseline: '当前仅展示商品名称和价格',
+    hypothesis: '强调质检和售后可降低决策疑虑',
+    primaryMetricKey: 'ADD_TO_CART_RATE',
+    primaryMetric: '加购转化率',
+    guardrailMetrics: '退款申请率（REFUND_REQUEST_RATE）',
+    expectedLift: '5% - 8%',
+    startTime: '2026-08-05T09:00',
+    endTime: '2026-08-19T09:00',
+    sellingPointsText: '官方质检、一年质保',
+    tone: '专业可信',
+    riskGuardrail: '不得夸大质保范围',
+    count: 3,
+    constraintsText: '不夸张',
+    sourceContextText: '当前首屏信息密度偏低'
+  })
+
+  assert.equal(payload.sourceContext.appId, 'shop-app')
+  assert.equal(payload.sourceContext.applicationName, '二手手机商城')
+  assert.equal(payload.sourceContext.businessScenario, '二手手机售卖')
+  assert.equal(payload.sourceContext.primaryMetricKey, 'ADD_TO_CART_RATE')
+  assert.equal(payload.sourceContext.primaryMetric, '加购转化率')
+  assert.equal(payload.sourceContext.guardrailMetrics, '退款申请率（REFUND_REQUEST_RATE）')
+  assert.equal(payload.sourceContext.startTime, '2026-08-05T09:00')
+  assert.equal(payload.sourceContext.endTime, '2026-08-19T09:00')
+  assert.equal(payload.sourceContext.riskGuardrail, '不得夸大质保范围')
+  assert.equal(payload.sourceContext.brief, '当前首屏信息密度偏低')
+})
+
 test('normalizeVariantCandidates keeps string candidates renderable', () => {
   const candidates = normalizeVariantCandidates({
     variants: ['放心下单', '价格透明']
@@ -498,6 +560,25 @@ test('normalizeVariantCandidates maps image candidate objects', () => {
       imageUrl: 'https://example.com/candidate.png'
     }
   ])
+})
+
+test('normalizeVariantPlans parses complete plan fields and keeps experiment context', () => {
+  const plans = normalizeVariantPlans({
+    variants: [
+      '方案名称：质检信任型｜策略方向：强化官方质检｜候选内容：99 道质检，放心下单｜实验假设：降低质量疑虑｜实施建议：替换首屏标题｜风险提醒：不夸大质检范围'
+    ]
+  }, 'TEXT', {
+    audience: '价格敏感用户',
+    primaryMetric: '加购转化率',
+    expectedLift: '5% - 8%'
+  })
+
+  assert.equal(plans[0].name, '质检信任型')
+  assert.equal(plans[0].strategy, '强化官方质检')
+  assert.equal(plans[0].content, '99 道质检，放心下单')
+  assert.equal(plans[0].hypothesis, '降低质量疑虑')
+  assert.equal(plans[0].primaryMetric, '加购转化率')
+  assert.equal(plans[0].expectedLift, '5% - 8%')
 })
 
 test('normalizeVariantGenerationModelEvidence maps production TongYi model metadata', () => {

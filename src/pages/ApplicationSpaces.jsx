@@ -1,28 +1,73 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   AlertTriangle,
+  ArrowLeft,
+  ArrowRight,
   BellRing,
   BookOpen,
   Building2,
+  Check,
   CheckCircle2,
   Clock3,
   Plus,
+  PencilLine,
   RefreshCw,
   RotateCcw,
   Save,
   Search,
   ShieldCheck,
   ShieldOff,
+  X,
   XCircle,
 } from 'lucide-react'
 import { applicationAPI, experimentAPI } from '../services/api'
+import {
+  EVENT_CATEGORY_OPTIONS,
+  EVENT_KEY_PATTERN,
+  METRIC_AGGREGATION_TYPE_OPTIONS,
+  METRIC_DENOMINATOR_TYPE_OPTIONS,
+} from '../utils/aiDecisionTransformers'
 import {
   buildApplicationSpaceDraft,
   buildApplicationSpacePayload,
   summarizeApplicationSpaces,
 } from '../utils/applicationSpaceGovernance'
+import {
+  getApprovalStatusLabel,
+  getEscalationStatusLabel,
+  getEventCategoryLabel,
+  getExperimentStatusLabel,
+  getGuardrailStatusLabel,
+  getMetricAggregationLabel,
+  getNotificationChannelLabel,
+  getRiskFlagLabel,
+  localizeSystemText,
+} from '../utils/uiLabels'
 
 const formatCount = (value) => Number(value || 0).toLocaleString()
+const APPLICATION_ID_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$/
+const buildDictionaryEditor = (type, item = {}) => type === 'event'
+  ? {
+      type,
+      key: item.key || '',
+      label: item.label || '',
+      description: item.description || '',
+      category: item.category || 'BUSINESS',
+      primary: Boolean(item.primary),
+    }
+  : {
+      type,
+      key: item.key || '',
+      name: item.name || '',
+      description: item.description || '',
+      aggregationType: item.aggregationType || 'RATE',
+      numeratorEventType: item.numeratorEventType || '',
+      denominatorType: item.denominatorType || 'EVENT_COUNT',
+      denominatorEventType: item.denominatorEventType || '',
+      primaryMetric: Boolean(item.primaryMetric),
+      guardrailMetric: Boolean(item.guardrailMetric),
+    }
 const getApprovalTaskKey = (task) => (
   `${task.experimentId}:${task.approvalType || 'EXPERIMENT_START'}:${task.draftVersion || '-'}`
 )
@@ -53,7 +98,7 @@ const getApprovalSlaText = (task) => {
     return ''
   }
   const elapsedHours = Number(task.approvalElapsedHours ?? 0)
-  return `SLA ${elapsedHours}/${task.approvalSlaHours}h`
+  return `审批时效 ${elapsedHours}/${task.approvalSlaHours} 小时`
 }
 const notificationStatusMeta = {
   PENDING: {
@@ -79,7 +124,7 @@ const notificationStatusMeta = {
 }
 const getNotificationStatusMeta = (status) => (
   notificationStatusMeta[status] || {
-    label: status || '待投递',
+    label: status ? '未知投递状态' : '待投递',
     className: 'border-[#d7deea] bg-white text-slate-600',
   }
 )
@@ -102,6 +147,24 @@ const releaseWindowDayLabels = {
   6: '周六',
   7: '周日',
 }
+const getDraftReleaseWindowDays = (value) => new Set(
+  String(value || '')
+    .split(',')
+    .map(day => Number(day.trim()))
+    .filter(day => Number.isInteger(day) && day >= 1 && day <= 7)
+)
+const toggleDraftReleaseWindowDay = (value, day) => {
+  const selectedDays = getDraftReleaseWindowDays(value)
+  if (selectedDays.has(day)) {
+    if (selectedDays.size === 1) {
+      return value
+    }
+    selectedDays.delete(day)
+  } else {
+    selectedDays.add(day)
+  }
+  return [...selectedDays].sort((left, right) => left - right).join(', ')
+}
 const formatReleaseWindow = (space) => {
   if (!space.releaseWindowEnabled) {
     return '未启用'
@@ -109,9 +172,10 @@ const formatReleaseWindow = (space) => {
   const days = (space.releaseWindowDays || [1, 2, 3, 4, 5])
     .map(day => releaseWindowDayLabels[day] || day)
     .join('、')
-  return `${days} ${space.releaseWindowStartTime || '09:00'}-${space.releaseWindowEndTime || '18:00'} ${
-    space.releaseWindowTimezone || 'Asia/Shanghai'
-  }`
+  const timezone = space.releaseWindowTimezone === 'Asia/Shanghai'
+    ? '中国标准时间'
+    : (space.releaseWindowTimezone ? '其他时区' : '中国标准时间')
+  return `${days} ${space.releaseWindowStartTime || '09:00'}-${space.releaseWindowEndTime || '18:00'} ${timezone}`
 }
 const formatApprovalSla = (space) => {
   if (!space.approvalSlaHours) {
@@ -131,6 +195,8 @@ export default function ApplicationSpaces() {
   const [dictionary, setDictionary] = useState(null)
   const [dictionaryLoading, setDictionaryLoading] = useState(false)
   const [dictionaryError, setDictionaryError] = useState('')
+  const [dictionaryEditor, setDictionaryEditor] = useState(null)
+  const [dictionarySaving, setDictionarySaving] = useState(false)
   const [approvalTasks, setApprovalTasks] = useState([])
   const [approvalLoading, setApprovalLoading] = useState(false)
   const [approvalError, setApprovalError] = useState('')
@@ -144,7 +210,10 @@ export default function ApplicationSpaces() {
   const [loading, setLoading] = useState(true)
   const [savingAppId, setSavingAppId] = useState('')
   const [error, setError] = useState('')
-  const [activeWorkspacePanel, setActiveWorkspacePanel] = useState('approvals')
+  const [activeWorkspacePanel, setActiveWorkspacePanel] = useState('spaces')
+  const [selectedAppId, setSelectedAppId] = useState('')
+  const [createDialogOpen, setCreateDialogOpen] = useState(false)
+  const [createStep, setCreateStep] = useState(1)
 
   useEffect(() => {
     loadGovernance()
@@ -189,8 +258,11 @@ export default function ApplicationSpaces() {
       if (!selectedDictionaryAppId && spaces.length > 0) {
         setSelectedDictionaryAppId(spaces[0].appId)
       }
+      setSelectedAppId(current => (
+        spaces.some(space => space.appId === current) ? current : (spaces[0]?.appId || '')
+      ))
     } catch (loadError) {
-      setError(loadError.response?.data?.message || loadError.message || '应用空间加载失败')
+      setError(localizeSystemText(loadError.response?.data?.message || loadError.message || '应用加载失败'))
     } finally {
       setLoading(false)
     }
@@ -204,7 +276,7 @@ export default function ApplicationSpaces() {
       setApprovalTasks(response.data || response || [])
     } catch (loadError) {
       setApprovalTasks([])
-      setApprovalError(loadError.response?.data?.message || loadError.message || '审批任务加载失败')
+      setApprovalError(localizeSystemText(loadError.response?.data?.message || loadError.message || '审批任务加载失败'))
     } finally {
       setApprovalLoading(false)
     }
@@ -218,7 +290,7 @@ export default function ApplicationSpaces() {
       setApprovalEscalations(response.data || response || [])
     } catch (loadError) {
       setApprovalEscalations([])
-      setEscalationError(loadError.response?.data?.message || loadError.message || '升级告警加载失败')
+      setEscalationError(localizeSystemText(loadError.response?.data?.message || loadError.message || '升级告警加载失败'))
     } finally {
       setEscalationLoading(false)
     }
@@ -252,9 +324,86 @@ export default function ApplicationSpaces() {
       setDictionary(response.data || response)
     } catch (loadError) {
       setDictionary(null)
-      setDictionaryError(loadError.response?.data?.message || loadError.message || '应用字典加载失败')
+      setDictionaryError(localizeSystemText(loadError.response?.data?.message || loadError.message || '应用字典加载失败'))
     } finally {
       setDictionaryLoading(false)
+    }
+  }
+
+  const openDictionaryEditor = (type, item) => {
+    setDictionaryError('')
+    setDictionaryEditor(buildDictionaryEditor(type, item))
+  }
+
+  const updateDictionaryEditor = (field, value) => {
+    setDictionaryEditor(current => ({ ...current, [field]: value }))
+  }
+
+  const saveDictionaryEntry = async () => {
+    const key = String(dictionaryEditor?.key || '').trim().toUpperCase()
+    if (!EVENT_KEY_PATTERN.test(key)) {
+      setDictionaryError('编码只支持大写字母、数字和下划线')
+      return
+    }
+    if (dictionaryEditor.type === 'event' && !String(dictionaryEditor.label || '').trim()) {
+      setDictionaryError('请填写事件名称')
+      return
+    }
+    if (dictionaryEditor.type === 'metric') {
+      if (!String(dictionaryEditor.name || '').trim()) {
+        setDictionaryError('请填写指标名称')
+        return
+      }
+      if (!dictionaryEditor.numeratorEventType) {
+        setDictionaryError('请选择指标的分子事件')
+        return
+      }
+      if (dictionaryEditor.aggregationType === 'RATE'
+        && dictionaryEditor.denominatorType === 'EVENT_COUNT'
+        && !dictionaryEditor.denominatorEventType) {
+        setDictionaryError('比率指标需要选择分母事件')
+        return
+      }
+    }
+
+    try {
+      setDictionarySaving(true)
+      setDictionaryError('')
+      let payload
+      if (dictionaryEditor.type === 'event') {
+        const eventDefinition = { ...dictionaryEditor, key }
+        delete eventDefinition.type
+        const eventDefinitions = dictionaryEditor.primary
+          ? [
+              ...dictionaryEventDefinitions
+                .filter(item => item.key !== key && item.primary)
+                .map(item => ({ ...item, primary: false })),
+              eventDefinition,
+            ]
+          : [eventDefinition]
+        payload = { eventDefinitions, metricDefinitions: [] }
+      } else {
+        const metricDefinition = { ...dictionaryEditor, key }
+        delete metricDefinition.type
+        const metricDefinitions = dictionaryEditor.primaryMetric
+          ? [
+              ...dictionaryMetricDefinitions
+                .filter(item => item.key !== key && item.primaryMetric)
+                .map(item => ({ ...item, primaryMetric: false })),
+              metricDefinition,
+            ]
+          : [metricDefinition]
+        payload = { eventDefinitions: [], metricDefinitions }
+      }
+      const response = await applicationAPI.upsertDictionary(selectedDictionaryAppId, payload)
+      setDictionary(response.data || response)
+      setDictionaryEditor(null)
+    } catch (saveError) {
+      setDictionaryError(localizeSystemText(
+        saveError.response?.data?.message || saveError.message || '应用字典保存失败'
+      ))
+    } finally {
+      setDictionarySaving(false)
     }
   }
 
@@ -273,6 +422,18 @@ export default function ApplicationSpaces() {
       ...current,
       [field]: value,
     }))
+  }
+
+  const openCreateDialog = () => {
+    setCreateStep(1)
+    setCreateDialogOpen(true)
+  }
+
+  const closeCreateDialog = () => {
+    setCreateStep(1)
+    setCreateDialogOpen(false)
+    setNewAppId('')
+    setNewDraft(buildApplicationSpaceDraft())
   }
 
   const updateApprovalComment = (taskKey, value) => {
@@ -315,7 +476,7 @@ export default function ApplicationSpaces() {
       await loadApprovalEscalations()
       await loadApprovalEscalationStatus()
     } catch (approvalError) {
-      alert('更新审批状态失败: ' + (approvalError.response?.data?.message || approvalError.message))
+      alert('更新审批状态失败：' + localizeSystemText(approvalError.response?.data?.message || approvalError.message))
     } finally {
       setApprovalActionId('')
     }
@@ -329,7 +490,7 @@ export default function ApplicationSpaces() {
       await loadApprovalEscalations()
       await loadApprovalEscalationStatus()
     } catch (scanError) {
-      alert('扫描审批升级告警失败: ' + (scanError.response?.data?.message || scanError.message))
+      alert('扫描审批升级告警失败：' + localizeSystemText(scanError.response?.data?.message || scanError.message))
     } finally {
       setEscalationActionId('')
     }
@@ -347,7 +508,7 @@ export default function ApplicationSpaces() {
       await loadApprovalEscalations()
       await loadApprovalEscalationStatus()
     } catch (ackError) {
-      alert('确认审批升级告警失败: ' + (ackError.response?.data?.message || ackError.message))
+      alert('确认审批升级告警失败：' + localizeSystemText(ackError.response?.data?.message || ackError.message))
     } finally {
       setEscalationActionId('')
     }
@@ -363,7 +524,7 @@ export default function ApplicationSpaces() {
       await loadApprovalEscalations()
       await loadApprovalEscalationStatus()
     } catch (retryError) {
-      alert('重投审批升级死信失败: ' + (retryError.response?.data?.message || retryError.message))
+      alert('重投审批升级死信失败：' + localizeSystemText(retryError.response?.data?.message || retryError.message))
     } finally {
       setEscalationActionId('')
     }
@@ -377,7 +538,7 @@ export default function ApplicationSpaces() {
       await loadApprovalEscalations()
       await loadApprovalEscalationStatus()
     } catch (retryError) {
-      alert('重投审批升级告警失败: ' + (retryError.response?.data?.message || retryError.message))
+      alert('重投审批升级告警失败：' + localizeSystemText(retryError.response?.data?.message || retryError.message))
     } finally {
       setEscalationActionId('')
     }
@@ -386,14 +547,17 @@ export default function ApplicationSpaces() {
   const saveApplicationSpace = async (appId, draft) => {
     const normalizedAppId = appId.trim()
     if (!normalizedAppId) {
-      alert('应用 ID 不能为空')
+      alert('应用标识不能为空')
       return
     }
 
     try {
       setSavingAppId(normalizedAppId)
       const payload = buildApplicationSpacePayload(draft)
-      const response = await applicationAPI.upsert(normalizedAppId, payload)
+      const isRegistration = normalizedAppId === newAppId.trim()
+      const response = isRegistration
+        ? await applicationAPI.register(normalizedAppId, payload)
+        : await applicationAPI.upsert(normalizedAppId, payload)
       const savedSpace = response.data || response
       setApplicationSpaces(current => {
         const existingIndex = current.findIndex(space => space.appId === savedSpace.appId)
@@ -406,22 +570,28 @@ export default function ApplicationSpaces() {
         ...current,
         [savedSpace.appId]: buildApplicationSpaceDraft(savedSpace),
       }))
-      if (normalizedAppId === newAppId.trim()) {
+      if (isRegistration) {
         setNewAppId('')
         setNewDraft(buildApplicationSpaceDraft())
+        setSelectedAppId(savedSpace.appId)
+        setCreateStep(1)
+        setCreateDialogOpen(false)
+        setActiveWorkspacePanel('spaces')
       }
     } catch (saveError) {
-      alert('保存应用空间失败: ' + (saveError.response?.data?.message || saveError.message))
+      const actionName = normalizedAppId === newAppId.trim() ? '注册应用' : '保存应用配置'
+      alert(`${actionName}失败：` + localizeSystemText(saveError.response?.data?.message || saveError.message))
     } finally {
       setSavingAppId('')
     }
   }
 
-  const renderApprovalSwitch = (checked, onChange) => (
+  const renderApprovalSwitch = (checked, onChange, label) => (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={label}
       onClick={() => onChange(!checked)}
       className={`inline-flex h-8 w-14 items-center rounded-full border px-1 transition-colors ${
         checked ? 'border-blue-200 bg-blue-50' : 'border-slate-200 bg-slate-100'
@@ -435,7 +605,7 @@ export default function ApplicationSpaces() {
     </button>
   )
 
-  const renderDictionaryList = (title, items, emptyMessage, renderMeta) => (
+  const renderDictionaryList = (title, items, emptyMessage, renderMeta, type) => (
     <div className="rounded-[1.2rem] border border-slate-200 bg-white p-4">
       <div className="mb-4 flex items-center justify-between gap-3">
         <h3 className="font-semibold text-slate-900">{title}</h3>
@@ -451,9 +621,20 @@ export default function ApplicationSpaces() {
         <div className="space-y-3">
           {items.map(item => (
             <div key={`${title}-${item.key}`} className="rounded-xl border border-slate-100 bg-slate-50 px-4 py-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-mono text-sm font-semibold text-slate-900">{item.key}</span>
-                {renderMeta(item)}
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-sm font-semibold text-slate-900">{item.key}</span>
+                  {renderMeta(item)}
+                </div>
+                <button
+                  type="button"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:border-blue-200 hover:text-[var(--brand)]"
+                  title={`编辑${type === 'event' ? '事件' : '指标'}`}
+                  aria-label={`编辑${item.label || item.name || item.key}`}
+                  onClick={() => openDictionaryEditor(type, item)}
+                >
+                  <PencilLine size={15} />
+                </button>
               </div>
               <p className="mt-2 text-sm font-medium text-slate-700">{item.label || item.name || '未命名'}</p>
               {item.description ? (
@@ -490,75 +671,116 @@ export default function ApplicationSpaces() {
   const escalationDispatcherChannels = Array.isArray(approvalEscalationStatus?.dispatcherChannels)
     ? approvalEscalationStatus.dispatcherChannels
     : []
-  const escalationDispatcherChannelText = escalationDispatcherChannels.join(', ')
+  const escalationDispatcherChannelText = escalationDispatcherChannels
+    .map(getNotificationChannelLabel)
+    .join('、')
+  const selectedSpace = applicationSpaces.find(space => space.appId === selectedAppId) || null
+  const selectedDraft = selectedSpace
+    ? (drafts[selectedSpace.appId] || buildApplicationSpaceDraft(selectedSpace))
+    : null
+  const normalizedNewAppId = newAppId.trim()
+  const newAppIdFormatValid = !normalizedNewAppId || APPLICATION_ID_PATTERN.test(normalizedNewAppId)
+  const newAppIdAvailable = !applicationSpaces.some(space => space.appId === normalizedNewAppId)
+  const newQuotaText = String(newDraft.experimentQuota ?? '').trim()
+  const newQuotaValid = !newQuotaText
+    || (Number.isInteger(Number(newQuotaText)) && Number(newQuotaText) >= 0)
+  const createBasicInfoComplete = Boolean(
+    normalizedNewAppId
+    && newAppIdFormatValid
+    && newAppIdAvailable
+    && newDraft.displayName.trim()
+    && newDraft.defaultOwner.trim()
+    && newQuotaValid
+  )
+  const newApprovalOwnerCount = new Set(
+    String(newDraft.approvalOwners || '')
+      .split(',')
+      .map(owner => owner.trim())
+      .filter(Boolean)
+  ).size || 1
+  const newApprovalRequiredCount = Number(newDraft.approvalRequiredCount)
+  const newApprovalRequiredCountValid = !newDraft.approvalRequired
+    || (Number.isInteger(newApprovalRequiredCount)
+      && newApprovalRequiredCount >= 1
+      && newApprovalRequiredCount <= newApprovalOwnerCount)
+  const newApprovalSlaText = String(newDraft.approvalSlaHours ?? '').trim()
+  const newApprovalSlaValid = !newDraft.approvalRequired
+    || !newApprovalSlaText
+    || (Number.isInteger(Number(newApprovalSlaText)) && Number(newApprovalSlaText) >= 1)
+  const newReleaseWindowValid = !newDraft.releaseWindowEnabled
+    || (newDraft.releaseWindowStartTime && newDraft.releaseWindowEndTime
+      && newDraft.releaseWindowStartTime < newDraft.releaseWindowEndTime)
+  const createGovernanceComplete = newApprovalRequiredCountValid
+    && newApprovalSlaValid
+    && newReleaseWindowValid
   const workspaceTabs = [
-    { key: 'approvals', label: '审批待办', count: approvalTasks.length },
-    { key: 'escalations', label: '升级告警', count: approvalEscalations.length },
-    { key: 'dictionary', label: '事件字典', count: dictionaryEventDefinitions.length + dictionaryMetricDefinitions.length },
-    { key: 'spaces', label: '空间配置', count: filteredSpaces.length },
+    { key: 'spaces', label: '应用列表', count: applicationSpaces.length, icon: Building2 },
+    { key: 'dictionary', label: '事件字典', count: dictionaryEventDefinitions.length + dictionaryMetricDefinitions.length, icon: BookOpen },
+    { key: 'approvals', label: '审批待办', count: approvalTasks.length, icon: Clock3 },
+    { key: 'escalations', label: '升级告警', count: approvalEscalations.length, icon: BellRing },
   ]
 
   return (
     <div className="space-y-6">
-      <section className="glass-card p-5">
-        <div className="grid gap-4 xl:grid-cols-[1fr_auto] xl:items-end">
+      <section className="glass-card overflow-hidden">
+        <div className="grid gap-5 p-5 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
           <div>
-            <div className="eyebrow mb-3">Governance</div>
-            <h1 className="page-title">应用空间</h1>
-            <p className="page-subtitle mt-2">管理应用归属、负责人、实验额度、配置/启动审批、SLA 和发布窗口。</p>
+            <div className="eyebrow mb-2">应用治理</div>
+            <h1 className="page-title">应用管理</h1>
+            <p className="page-subtitle mt-2">集中管理应用、负责人、实验额度、审批策略和发布时间。</p>
           </div>
-          <button
-            type="button"
-            onClick={loadGovernance}
-            className="btn-secondary flex items-center gap-2"
-            disabled={loading || approvalLoading || escalationLoading}
-          >
-            <RefreshCw size={16} className={loading || approvalLoading || escalationLoading ? 'animate-spin' : ''} />
-            刷新
-          </button>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="mr-2 hidden items-center divide-x divide-slate-200 text-sm xl:flex">
+              <div className="px-4">
+                <p className="text-xs text-slate-500">应用</p>
+                <p className="mt-1 font-bold text-slate-900">{formatCount(summary.applicationCount)}</p>
+              </div>
+              <div className="px-4">
+                <p className="text-xs text-slate-500">实验</p>
+                <p className="mt-1 font-bold text-slate-900">{formatCount(summary.experimentCount)}</p>
+              </div>
+              <div className="px-4">
+                <p className="text-xs text-slate-500">运行中</p>
+                <p className="mt-1 font-bold text-[#1e7e57]">{formatCount(summary.runningExperimentCount)}</p>
+              </div>
+              <div className="px-4">
+                <p className="text-xs text-slate-500">待审批</p>
+                <p className="mt-1 font-bold text-[#9a6026]">{formatCount(approvalTasks.length)}</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={loadGovernance}
+              className="btn-secondary px-3"
+              title="刷新应用管理数据"
+              disabled={loading || approvalLoading || escalationLoading}
+            >
+              <RefreshCw size={17} className={loading || approvalLoading || escalationLoading ? 'animate-spin' : ''} />
+            </button>
+            <button
+              type="button"
+              onClick={openCreateDialog}
+              className="btn-primary"
+            >
+              <Plus size={17} />
+              注册应用
+            </button>
+          </div>
         </div>
-      </section>
-
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
-        <div className="fact-tile">
-          <p className="signal-label">Applications</p>
-          <p className="signal-value">{formatCount(summary.applicationCount)}</p>
-        </div>
-        <div className="fact-tile">
-          <p className="signal-label">Experiments</p>
-          <p className="signal-value">{formatCount(summary.experimentCount)}</p>
-        </div>
-        <div className="fact-tile">
-          <p className="signal-label">Running</p>
-          <p className="signal-value">{formatCount(summary.runningExperimentCount)}</p>
-        </div>
-        <div className="fact-tile">
-          <p className="signal-label">Approval</p>
-          <p className="signal-value">{formatCount(summary.approvalRequiredCount)}</p>
-        </div>
-        <div className="fact-tile">
-          <p className="signal-label">SLA</p>
-          <p className="signal-value">{formatCount(summary.approvalSlaEnabledCount)}</p>
-        </div>
-        <div className="fact-tile">
-          <p className="signal-label">Windows</p>
-          <p className="signal-value">{formatCount(summary.releaseWindowEnabledCount)}</p>
-        </div>
-      </section>
-
-      <nav className="glass-card p-2">
-        <div className="flex flex-wrap gap-2">
+        <nav className="border-t border-slate-200 bg-slate-50/70 px-4 py-2">
+        <div className="flex gap-2 overflow-x-auto">
           {workspaceTabs.map(tab => (
             <button
               key={tab.key}
               type="button"
-              className={`rounded-full border px-3 py-2 text-xs font-semibold transition-colors ${
+              className={`inline-flex shrink-0 items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors ${
                 activeWorkspacePanel === tab.key
                   ? 'border-blue-200 bg-blue-50 text-[var(--brand)]'
                   : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
               }`}
               onClick={() => setActiveWorkspacePanel(tab.key)}
             >
+              <tab.icon size={15} />
               {tab.label}
               <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
                 {formatCount(tab.count)}
@@ -566,7 +788,8 @@ export default function ApplicationSpaces() {
             </button>
           ))}
         </div>
-      </nav>
+        </nav>
+      </section>
 
       {activeWorkspacePanel === 'approvals' ? (
       <section className="glass-card p-5">
@@ -576,7 +799,7 @@ export default function ApplicationSpaces() {
               <Clock3 size={18} />
             </div>
             <div>
-              <p className="signal-label">Approvals</p>
+              <p className="signal-label">审批待办</p>
               <h2 className="section-title mt-1">配置/启动审批待办</h2>
             </div>
           </div>
@@ -624,13 +847,13 @@ export default function ApplicationSpaces() {
                         {getApprovalTaskTypeLabel(task.approvalType)}
                       </span>
                       <span className="rounded-full border border-[#ecd8bf] bg-[#fff8ef] px-2.5 py-1 text-xs font-semibold text-[#9a6026]">
-                        {task.approvalStatus || 'PENDING'}
+                        {getApprovalStatusLabel(task.approvalStatus || 'PENDING')}
                       </span>
                     </div>
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-500">
-                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{task.appId || 'default'}</span>
-                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{task.owner || 'system'}</span>
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{task.appId || '默认应用'}</span>
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{task.owner || '系统'}</span>
                     <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">
                       提交 {task.approvalRequestedBy || '-'}
                     </span>
@@ -645,7 +868,9 @@ export default function ApplicationSpaces() {
                         {getApprovalSlaText(task)}
                       </span>
                     ) : null}
-                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{task.experimentStatus || 'DRAFT'}</span>
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">
+                      {getExperimentStatusLabel(task.experimentStatus || 'DRAFT')}
+                    </span>
                     {task.layerId ? (
                       <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{task.layerId}</span>
                     ) : null}
@@ -668,7 +893,9 @@ export default function ApplicationSpaces() {
                           ? 'border-[#ecd8bf] bg-[#fff8ef] text-[#9a6026]'
                           : 'border-slate-200 bg-slate-50 text-slate-500'
                       }`}>
-                        风险 {task.approvalRiskLevel}
+                        风险 {task.approvalRiskLevel === 'BLOCKED'
+                          ? getGuardrailStatusLabel(task.approvalRiskLevel)
+                          : '需关注'}
                       </span>
                     ) : null}
                     {task.latestReportSnapshotVersion ? (
@@ -678,7 +905,7 @@ export default function ApplicationSpaces() {
                     ) : null}
                     {(task.approvalRiskFlags || []).map(flag => (
                       <span key={flag} className="rounded-full border border-[#ecd8bf] bg-[#fff8ef] px-2 py-1 text-[#9a6026]">
-                        {flag}
+                        {getRiskFlagLabel(flag)}
                       </span>
                     ))}
                   </div>
@@ -689,7 +916,7 @@ export default function ApplicationSpaces() {
                   ) : null}
                   {task.approvalEscalationReason ? (
                     <p className="mt-3 rounded-xl border border-[#ecd8bf] bg-[#fff8ef] px-3 py-2 text-sm text-[#9a6026]">
-                      {task.approvalEscalationReason}
+                      {localizeSystemText(task.approvalEscalationReason)}
                       {(task.approvalEscalationOwners || []).length > 0
                         ? `，升级接收人：${task.approvalEscalationOwners.join(', ')}`
                         : ''}
@@ -706,7 +933,7 @@ export default function ApplicationSpaces() {
                   {task.approvalDisabledReason ? (
                     <div className="mt-3 flex items-center gap-2 rounded-xl border border-[#ecd8bf] bg-[#fff8ef] px-3 py-2 text-sm text-[#9a6026]">
                       <AlertTriangle size={16} />
-                      {task.approvalDisabledReason || '当前身份不可审批'}
+                      {localizeSystemText(task.approvalDisabledReason) || '当前身份不可审批'}
                     </div>
                   ) : null}
                   <input
@@ -752,13 +979,13 @@ export default function ApplicationSpaces() {
               <BellRing size={18} />
             </div>
             <div>
-              <p className="signal-label">Outbox</p>
+              <p className="signal-label">通知投递</p>
               <h2 className="section-title mt-1">审批升级告警</h2>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <span className="rounded-full border border-[#f3e3a0] bg-[#fffbea] px-3 py-1 text-sm font-semibold text-[#8a6d1d]">
-              {formatCount(approvalEscalations.length)} OPEN
+              {formatCount(approvalEscalations.length)} 条待确认
             </span>
             <span className={`rounded-full border px-3 py-1 text-sm font-semibold ${
               escalationHealthy
@@ -865,22 +1092,22 @@ export default function ApplicationSpaces() {
                         {notificationStatus.label}
                       </span>
                       <span className="rounded-full border border-[#ecd8bf] bg-white px-2.5 py-1 text-xs font-semibold text-[#9a6026]">
-                        {escalation.escalationStatus || 'OPEN'}
+                        {getEscalationStatusLabel(escalation.escalationStatus || 'OPEN')}
                       </span>
                     </div>
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-600">
                     <span className="rounded-full border border-slate-200 bg-white px-2 py-1">
-                      {escalation.appId || 'default'}
+                      {escalation.appId || '默认应用'}
                     </span>
                     <span className="rounded-full border border-slate-200 bg-white px-2 py-1">
                       {getApprovalTaskTypeLabel(escalation.approvalType)}
                     </span>
                     <span className="rounded-full border border-slate-200 bg-white px-2 py-1">
-                      SLA {Number(escalation.approvalElapsedHours || 0)}/{escalation.approvalSlaHours || '-'}h
+                      审批时效 {Number(escalation.approvalElapsedHours || 0)}/{escalation.approvalSlaHours || '-'} 小时
                     </span>
                     <span className="rounded-full border border-slate-200 bg-white px-2 py-1">
-                      通道 {escalation.notificationChannel || 'OUTBOX'}
+                      通道 {getNotificationChannelLabel(escalation.notificationChannel || 'OUTBOX')}
                     </span>
                     <span className="rounded-full border border-slate-200 bg-white px-2 py-1">
                       投递 {notificationAttemptCount} 次
@@ -897,14 +1124,14 @@ export default function ApplicationSpaces() {
                     ) : null}
                   </div>
                   <p className="mt-3 rounded-xl bg-white px-3 py-2 text-sm text-[#8a6d1d] ring-1 ring-[#f3e3a0]">
-                    {escalation.escalationReason || '审批已超过 SLA'}
+                    {localizeSystemText(escalation.escalationReason || '审批已超过审批时效')}
                     {(escalation.escalationOwners || []).length > 0
                       ? `，接收人：${escalation.escalationOwners.join(', ')}`
                       : ''}
                   </p>
                   {escalation.notificationLastError ? (
                     <p className="mt-2 break-words rounded-xl border border-[#ecd8bf] bg-white px-3 py-2 text-xs text-[#9a6026]">
-                      最近错误：{escalation.notificationLastError}
+                      最近错误：{localizeSystemText(escalation.notificationLastError)}
                     </p>
                   ) : null}
                   {notificationDeliveries.length > 0 ? (
@@ -920,7 +1147,7 @@ export default function ApplicationSpaces() {
                           >
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="font-semibold text-slate-800">
-                                {delivery.channelName || 'DEFAULT'}
+                                {getNotificationChannelLabel(delivery.channelName || 'DEFAULT')}
                               </span>
                               <span className={`rounded-full border px-2 py-0.5 font-semibold ${deliveryStatus.className}`}>
                                 {deliveryStatus.label}
@@ -940,7 +1167,7 @@ export default function ApplicationSpaces() {
                             </div>
                             {delivery.notificationLastError ? (
                               <p className="mt-1 break-words text-[#9a6026]">
-                                {delivery.notificationLastError}
+                                {localizeSystemText(delivery.notificationLastError)}
                               </p>
                             ) : null}
                           </div>
@@ -980,43 +1207,74 @@ export default function ApplicationSpaces() {
 
       {activeWorkspacePanel === 'dictionary' ? (
       <section className="glass-card p-5">
-        <div className="grid gap-4 xl:grid-cols-[1fr_auto] xl:items-end">
-          <div>
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-[var(--brand)]">
-                <BookOpen size={18} />
-              </div>
-              <div>
-                <p className="signal-label">Dictionary</p>
-                <h2 className="section-title mt-1">事件与指标字典</h2>
-              </div>
-            </div>
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-[var(--brand)]">
+            <BookOpen size={18} />
           </div>
-          <div className="flex flex-wrap gap-3">
-            <select
-              value={selectedDictionaryAppId}
-              onChange={(event) => setSelectedDictionaryAppId(event.target.value)}
-              className="input h-11 min-w-[220px]"
-              disabled={applicationSpaces.length === 0}
-            >
-              {applicationSpaces.length === 0 ? (
-                <option value="">暂无应用</option>
-              ) : (
-                applicationSpaces.map(space => (
-                  <option key={space.appId} value={space.appId}>
-                    {space.displayName || space.appId} · {space.appId}
-                  </option>
-                ))
-              )}
-            </select>
+          <div>
+            <p className="signal-label">应用字典</p>
+            <h2 className="section-title mt-1">事件与指标字典</h2>
+          </div>
+        </div>
+
+        <div className="mt-4 flex flex-col gap-3 border-t border-slate-200 pt-4 lg:flex-row lg:items-center">
+          <div className="flex min-w-0 flex-1 gap-2 overflow-x-auto pb-1" role="listbox" aria-label="选择应用">
+            {applicationSpaces.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-slate-200 px-4 py-3 text-sm text-slate-500">
+                暂无可选应用
+              </div>
+            ) : applicationSpaces.map(space => {
+              const selected = selectedDictionaryAppId === space.appId
+              return (
+                <button
+                  key={space.appId}
+                  type="button"
+                  role="option"
+                  aria-selected={selected}
+                  onClick={() => setSelectedDictionaryAppId(space.appId)}
+                  className={`flex min-w-[240px] items-center gap-3 rounded-lg border px-3 py-2 text-left transition ${selected
+                    ? 'border-blue-300 bg-blue-50 text-[var(--brand)]'
+                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <Building2 size={17} className="shrink-0" />
+                  <span className="min-w-0 flex-1">
+                    <strong className="block truncate text-sm text-slate-900">{space.displayName || space.appId}</strong>
+                    <small className="mt-0.5 block truncate text-xs opacity-70">{space.appId}</small>
+                  </span>
+                  {selected ? <Check size={16} className="shrink-0" /> : null}
+                </button>
+              )
+            })}
+          </div>
+          <div className="flex shrink-0 flex-wrap gap-2">
             <button
               type="button"
               onClick={() => loadApplicationDictionary()}
               className="btn-secondary flex items-center gap-2"
               disabled={!selectedDictionaryAppId || dictionaryLoading}
+              title="刷新当前应用字典"
             >
               <RefreshCw size={16} className={dictionaryLoading ? 'animate-spin' : ''} />
-              刷新字典
+              刷新
+            </button>
+            <button
+              type="button"
+              onClick={() => openDictionaryEditor('event')}
+              className="btn-secondary flex items-center gap-2"
+              disabled={!selectedDictionaryAppId}
+            >
+              <Plus size={16} />
+              新增事件
+            </button>
+            <button
+              type="button"
+              onClick={() => openDictionaryEditor('metric')}
+              className="btn-primary flex items-center gap-2"
+              disabled={!selectedDictionaryAppId || dictionaryEventDefinitions.length === 0}
+            >
+              <Plus size={16} />
+              新增指标
             </button>
           </div>
         </div>
@@ -1042,14 +1300,15 @@ export default function ApplicationSpaces() {
                 <>
                   {item.category ? (
                     <span className="rounded-full bg-blue-50 px-2 py-1 text-xs text-[var(--brand)]">
-                      {item.category}
+                      {getEventCategoryLabel(item.category)}
                     </span>
                   ) : null}
                   {item.primary ? (
                     <span className="rounded-full bg-[#f6fbf8] px-2 py-1 text-xs text-[#1e7e57]">主事件</span>
                   ) : null}
                 </>
-              )
+              ),
+              'event'
             )}
             {renderDictionaryList(
               '指标定义',
@@ -1058,7 +1317,7 @@ export default function ApplicationSpaces() {
               item => (
                 <>
                   <span className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-500">
-                    {item.aggregationType || 'RATE'}
+                    {getMetricAggregationLabel(item.aggregationType || 'RATE')}
                   </span>
                   {item.primaryMetric ? (
                     <span className="rounded-full bg-[#f6fbf8] px-2 py-1 text-xs text-[#1e7e57]">主指标</span>
@@ -1067,130 +1326,111 @@ export default function ApplicationSpaces() {
                     <span className="rounded-full bg-[#fff8ef] px-2 py-1 text-xs text-[#9a6026]">护栏</span>
                   ) : null}
                 </>
-              )
+              ),
+              'metric'
             )}
           </div>
         ) : (
           <div className="mt-5 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
-            先注册或配置一个应用空间
+            先注册或配置一个应用
           </div>
         )}
       </section>
       ) : null}
 
+      {dictionaryEditor ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 px-4 py-6" role="dialog" aria-modal="true">
+          <div className="w-full max-w-2xl rounded-[1.2rem] border border-slate-200 bg-white p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="signal-label">应用字典</p>
+                <h2 className="section-title mt-1">{dictionaryEditor.type === 'event' ? '维护事件定义' : '维护指标定义'}</h2>
+              </div>
+              <button type="button" className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:text-slate-900" title="关闭" aria-label="关闭字典编辑器" onClick={() => setDictionaryEditor(null)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="mt-5 grid gap-4 md:grid-cols-2">
+              <label className="block text-sm text-slate-600">{dictionaryEditor.type === 'event' ? '事件编码' : '指标编码'}
+                <input className="input mt-2 font-mono" value={dictionaryEditor.key} onChange={event => updateDictionaryEditor('key', event.target.value.toUpperCase())} placeholder={dictionaryEditor.type === 'event' ? 'PRODUCT_VIEW' : 'ORDER_RATE'} />
+              </label>
+              <label className="block text-sm text-slate-600">{dictionaryEditor.type === 'event' ? '事件名称' : '指标名称'}
+                <input className="input mt-2" value={dictionaryEditor.type === 'event' ? dictionaryEditor.label : dictionaryEditor.name} onChange={event => updateDictionaryEditor(dictionaryEditor.type === 'event' ? 'label' : 'name', event.target.value)} placeholder={dictionaryEditor.type === 'event' ? '例如：浏览商品详情' : '例如：下单转化率'} />
+              </label>
+
+              {dictionaryEditor.type === 'event' ? (
+                <>
+                  <label className="block text-sm text-slate-600">事件分类
+                    <select className="input mt-2" value={dictionaryEditor.category} onChange={event => updateDictionaryEditor('category', event.target.value)}>
+                      {EVENT_CATEGORY_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </label>
+                  <label className="flex items-center gap-3 self-end rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-700">
+                    <input type="checkbox" checked={dictionaryEditor.primary} onChange={event => updateDictionaryEditor('primary', event.target.checked)} />
+                    设为主事件
+                  </label>
+                </>
+              ) : (
+                <>
+                  <label className="block text-sm text-slate-600">聚合方式
+                    <select className="input mt-2" value={dictionaryEditor.aggregationType} onChange={event => updateDictionaryEditor('aggregationType', event.target.value)}>
+                      {METRIC_AGGREGATION_TYPE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </label>
+                  <label className="block text-sm text-slate-600">分子事件
+                    <select className="input mt-2" value={dictionaryEditor.numeratorEventType} onChange={event => updateDictionaryEditor('numeratorEventType', event.target.value)}>
+                      <option value="">选择事件</option>
+                      {dictionaryEventDefinitions.map(item => <option key={item.key} value={item.key}>{item.label}（{item.key}）</option>)}
+                    </select>
+                  </label>
+                  <label className="block text-sm text-slate-600">分母口径
+                    <select className="input mt-2" value={dictionaryEditor.denominatorType} onChange={event => updateDictionaryEditor('denominatorType', event.target.value)} disabled={dictionaryEditor.aggregationType === 'COUNT'}>
+                      {METRIC_DENOMINATOR_TYPE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </label>
+                  <label className="block text-sm text-slate-600">分母事件
+                    <select className="input mt-2" value={dictionaryEditor.denominatorEventType} onChange={event => updateDictionaryEditor('denominatorEventType', event.target.value)} disabled={dictionaryEditor.aggregationType !== 'RATE' || dictionaryEditor.denominatorType !== 'EVENT_COUNT'}>
+                      <option value="">选择事件</option>
+                      {dictionaryEventDefinitions.map(item => <option key={item.key} value={item.key}>{item.label}（{item.key}）</option>)}
+                    </select>
+                  </label>
+                  <label className="flex items-center gap-3 rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-700">
+                    <input type="checkbox" checked={dictionaryEditor.primaryMetric} onChange={event => updateDictionaryEditor('primaryMetric', event.target.checked)} />
+                    设为主指标
+                  </label>
+                  <label className="flex items-center gap-3 rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-700">
+                    <input type="checkbox" checked={dictionaryEditor.guardrailMetric} onChange={event => updateDictionaryEditor('guardrailMetric', event.target.checked)} />
+                    设为护栏指标
+                  </label>
+                </>
+              )}
+
+              <label className="block text-sm text-slate-600 md:col-span-2">说明
+                <textarea className="textarea mt-2 resize-none" rows="3" value={dictionaryEditor.description} onChange={event => updateDictionaryEditor('description', event.target.value)} placeholder="说明采集时机、计算口径或使用范围" />
+              </label>
+            </div>
+
+            <div className="mt-5 flex justify-end gap-3 border-t border-slate-200 pt-4">
+              <button type="button" className="btn-secondary" onClick={() => setDictionaryEditor(null)}>取消</button>
+              <button type="button" className="btn-primary" onClick={saveDictionaryEntry} disabled={dictionarySaving}>
+                {dictionarySaving ? <RefreshCw size={16} className="animate-spin" /> : <Save size={16} />}
+                {dictionarySaving ? '保存中' : '保存字典'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {activeWorkspacePanel === 'spaces' ? (
       <>
-      <section className="glass-card p-5">
-        <div className="grid gap-3 xl:grid-cols-[minmax(150px,200px)_1fr_1fr_minmax(110px,150px)_minmax(180px,1fr)_minmax(100px,130px)_auto_auto]">
-          <input
-            value={newAppId}
-            onChange={(event) => setNewAppId(event.target.value)}
-            className="input"
-            placeholder="应用 ID"
-          />
-          <input
-            value={newDraft.displayName}
-            onChange={(event) => updateNewDraft('displayName', event.target.value)}
-            className="input"
-            placeholder="展示名称"
-          />
-          <input
-            value={newDraft.defaultOwner}
-            onChange={(event) => updateNewDraft('defaultOwner', event.target.value)}
-            className="input"
-            placeholder="默认负责人"
-          />
-          <input
-            value={newDraft.experimentQuota}
-            onChange={(event) => updateNewDraft('experimentQuota', event.target.value)}
-            className="input"
-            placeholder="实验配额"
-            inputMode="numeric"
-          />
-          <input
-            value={newDraft.approvalOwners}
-            onChange={(event) => updateNewDraft('approvalOwners', event.target.value)}
-            className="input"
-            placeholder="审批人，逗号分隔"
-          />
-          <input
-            value={newDraft.approvalRequiredCount}
-            onChange={(event) => updateNewDraft('approvalRequiredCount', event.target.value)}
-            className="input"
-            placeholder="通过人数"
-            inputMode="numeric"
-          />
-          <input
-            value={newDraft.approvalSlaHours}
-            onChange={(event) => updateNewDraft('approvalSlaHours', event.target.value)}
-            className="input"
-            placeholder="SLA 小时"
-            inputMode="numeric"
-          />
-          <input
-            value={newDraft.approvalEscalationOwners}
-            onChange={(event) => updateNewDraft('approvalEscalationOwners', event.target.value)}
-            className="input"
-            placeholder="升级接收人"
-          />
-          <div className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4">
-            {newDraft.approvalRequired ? (
-              <ShieldCheck size={16} className="text-[var(--brand)]" />
-            ) : (
-              <ShieldOff size={16} className="text-slate-400" />
-            )}
-            {renderApprovalSwitch(newDraft.approvalRequired, value => updateNewDraft('approvalRequired', value))}
+      <section className="glass-card flex flex-col overflow-hidden lg:h-[calc(100vh-19rem)] lg:min-h-[420px]">
+        <div className="flex shrink-0 flex-col gap-3 border-b border-slate-200 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="section-title">应用列表</h2>
+            <p className="mt-1 text-sm text-slate-500">选择应用后，直接在右侧维护完整配置。</p>
           </div>
-          <div className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4">
-            <Clock3 size={16} className={newDraft.releaseWindowEnabled ? 'text-[var(--brand)]' : 'text-slate-400'} />
-            {renderApprovalSwitch(
-              newDraft.releaseWindowEnabled,
-              value => updateNewDraft('releaseWindowEnabled', value)
-            )}
-          </div>
-          <input
-            value={newDraft.releaseWindowDays}
-            onChange={(event) => updateNewDraft('releaseWindowDays', event.target.value)}
-            className="input"
-            placeholder="发布星期 1,2,3,4,5"
-            disabled={!newDraft.releaseWindowEnabled}
-          />
-          <input
-            value={newDraft.releaseWindowStartTime}
-            onChange={(event) => updateNewDraft('releaseWindowStartTime', event.target.value)}
-            className="input"
-            type="time"
-            disabled={!newDraft.releaseWindowEnabled}
-          />
-          <input
-            value={newDraft.releaseWindowEndTime}
-            onChange={(event) => updateNewDraft('releaseWindowEndTime', event.target.value)}
-            className="input"
-            type="time"
-            disabled={!newDraft.releaseWindowEnabled}
-          />
-          <input
-            value={newDraft.releaseWindowTimezone}
-            onChange={(event) => updateNewDraft('releaseWindowTimezone', event.target.value)}
-            className="input"
-            placeholder="Asia/Shanghai"
-            disabled={!newDraft.releaseWindowEnabled}
-          />
-          <button
-            type="button"
-            className="btn-primary flex items-center gap-2"
-            onClick={() => saveApplicationSpace(newAppId, newDraft)}
-            disabled={savingAppId === newAppId.trim()}
-          >
-            <Plus size={16} />
-            注册
-          </button>
-        </div>
-      </section>
-
-      <section className="glass-card overflow-hidden">
-        <div className="border-b border-slate-200 p-5">
-          <div className="relative max-w-xl">
+          <div className="relative w-full sm:max-w-sm">
             <div className="pointer-events-none absolute left-3 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg bg-slate-100 text-slate-400">
               <Search size={16} />
             </div>
@@ -1210,225 +1450,403 @@ export default function ApplicationSpaces() {
             {error}
           </div>
         ) : loading ? (
-          <div className="p-5 space-y-3">
-            {[1, 2, 3].map(index => (
-              <div key={index} className="h-20 rounded-xl bg-slate-200/60 animate-shimmer" />
-            ))}
+          <div className="grid min-h-[420px] flex-1 gap-0 lg:min-h-0 xl:grid-cols-[320px_minmax(0,1fr)]">
+            <div className="space-y-3 border-r border-slate-200 p-4">
+              {[1, 2, 3].map(index => <div key={index} className="h-20 rounded-xl bg-slate-200/60 animate-shimmer" />)}
+            </div>
+            <div className="m-5 rounded-xl bg-slate-100 animate-shimmer" />
           </div>
-        ) : filteredSpaces.length === 0 ? (
-          <div className="py-16 text-center text-slate-500">
+        ) : applicationSpaces.length === 0 ? (
+          <div className="flex flex-1 flex-col items-center justify-center py-16 text-center text-slate-500">
             <Building2 size={44} className="mx-auto mb-4 text-slate-400" />
-            没有匹配的应用空间
+            <p className="font-semibold text-slate-700">还没有应用</p>
+            <button type="button" className="btn-primary mt-4" onClick={openCreateDialog}>
+              <Plus size={16} />
+              注册第一个应用
+            </button>
           </div>
         ) : (
-          <div className="max-h-[58vh] overflow-auto">
-            <table className="min-w-[1580px] w-full text-left text-sm">
-              <thead className="border-b border-slate-200 bg-slate-50/80 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
-                <tr>
-                  <th className="px-5 py-4">应用</th>
-                  <th className="px-5 py-4">默认负责人</th>
-                  <th className="px-5 py-4">审批人</th>
-                  <th className="px-5 py-4">实验配额</th>
-                  <th className="px-5 py-4">配置/启动审批</th>
-                  <th className="px-5 py-4">发布窗口</th>
-                  <th className="px-5 py-4">规模</th>
-                  <th className="px-5 py-4">来源</th>
-                  <th className="px-5 py-4 text-right">操作</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {filteredSpaces.map((space) => {
-                  const draft = drafts[space.appId] || buildApplicationSpaceDraft(space)
-                  const isSaving = savingAppId === space.appId
+          <div className="grid min-h-[460px] flex-1 lg:min-h-0 xl:grid-cols-[320px_minmax(0,1fr)]">
+            <aside className="border-b border-slate-200 bg-slate-50/60 xl:border-b-0 xl:border-r">
+              <div className="max-h-[64vh] space-y-2 overflow-y-auto p-3 lg:h-full lg:max-h-none">
+                {filteredSpaces.length === 0 ? (
+                  <div className="px-3 py-12 text-center text-sm text-slate-500">没有匹配的应用</div>
+                ) : filteredSpaces.map(space => (
+                  <button
+                    key={space.appId}
+                    type="button"
+                    onClick={() => setSelectedAppId(space.appId)}
+                    className={`w-full rounded-xl border px-4 py-3 text-left transition-colors ${
+                      selectedAppId === space.appId
+                        ? 'border-blue-200 bg-white shadow-sm'
+                        : 'border-transparent hover:border-slate-200 hover:bg-white'
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
+                        selectedAppId === space.appId ? 'bg-blue-50 text-[var(--brand)]' : 'bg-slate-100 text-slate-500'
+                      }`}>
+                        <Building2 size={17} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-semibold text-slate-900">{space.displayName || space.appId}</p>
+                        <p className="mt-1 truncate font-mono text-xs text-slate-500">{space.appId}</p>
+                      </div>
+                      <span className="text-xs font-semibold text-slate-500">{formatCount(space.experimentCount)}</span>
+                    </div>
+                    <div className="mt-3 flex items-center gap-3 text-xs text-slate-500">
+                      <span>{space.defaultOwner || '未设负责人'}</span>
+                      <span>{formatCount(space.runningExperimentCount)} 运行中</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </aside>
 
-                  return (
-                    <tr key={space.appId} className="align-top hover:bg-slate-50/70">
-                      <td className="px-5 py-4">
-                        <div className="flex items-start gap-3">
-                          <div className="mt-1 flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-[var(--brand)]">
-                            <Building2 size={18} />
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <input
-                              value={draft.displayName}
-                              onChange={(event) => updateDraft(space.appId, 'displayName', event.target.value)}
-                              className="input h-10 px-3 py-2"
-                              placeholder={space.appId}
-                            />
-                            <p className="mt-2 font-mono text-xs text-slate-500">{space.appId}</p>
-                          </div>
+            {selectedSpace && selectedDraft ? (
+              <div className="flex min-h-0 min-w-0 flex-col">
+                <div className="flex shrink-0 flex-col gap-4 border-b border-slate-200 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="truncate text-xl font-bold text-slate-900">{selectedSpace.displayName || selectedSpace.appId}</h3>
+                      {selectedDraft.approvalRequired ? (
+                        <span className="badge border border-blue-200 bg-blue-50 text-[var(--brand)]">需要审批</span>
+                      ) : (
+                        <span className="badge border border-slate-200 bg-slate-50 text-slate-600">无需审批</span>
+                      )}
+                      {selectedDraft.releaseWindowEnabled ? (
+                        <span className="badge border border-[#cde5d7] bg-[#f6fbf8] text-[#1e7e57]">已设发布窗口</span>
+                      ) : null}
+                    </div>
+                    <p className="mt-1 font-mono text-xs text-slate-500">{selectedSpace.appId}</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={() => {
+                        setSelectedDictionaryAppId(selectedSpace.appId)
+                        setActiveWorkspacePanel('dictionary')
+                      }}
+                    >
+                      <BookOpen size={16} />
+                      查看字典
+                    </button>
+                    <Link to={`/experiments?appId=${encodeURIComponent(selectedSpace.appId)}`} className="btn-secondary">
+                      {formatCount(selectedSpace.experimentCount)} 个实验
+                    </Link>
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      onClick={() => saveApplicationSpace(selectedSpace.appId, selectedDraft)}
+                      disabled={savingAppId === selectedSpace.appId}
+                    >
+                      <Save size={16} />
+                      {savingAppId === selectedSpace.appId ? '保存中' : '保存配置'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  <section className="border-b border-slate-200 p-5">
+                    <div className="mb-4">
+                      <h4 className="font-semibold text-slate-900">基础信息</h4>
+                      <p className="mt-1 text-sm text-slate-500">应用名称、负责人和可创建实验数量。</p>
+                    </div>
+                    <div className="grid gap-4 md:grid-cols-3">
+                      <label className="text-sm text-slate-600">
+                        展示名称
+                        <input value={selectedDraft.displayName} onChange={event => updateDraft(selectedSpace.appId, 'displayName', event.target.value)} className="input mt-2" />
+                      </label>
+                      <label className="text-sm text-slate-600">
+                        默认负责人
+                        <input value={selectedDraft.defaultOwner} onChange={event => updateDraft(selectedSpace.appId, 'defaultOwner', event.target.value)} className="input mt-2" placeholder="输入负责人" />
+                      </label>
+                      <label className="text-sm text-slate-600">
+                        实验配额
+                        <input value={selectedDraft.experimentQuota} onChange={event => updateDraft(selectedSpace.appId, 'experimentQuota', event.target.value)} className="input mt-2" placeholder="不限制" inputMode="numeric" />
+                      </label>
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2 text-xs text-slate-500">
+                      <span className="rounded-lg bg-slate-100 px-3 py-2">已用 {formatCount(selectedSpace.quotaUsed)}，剩余 {selectedSpace.quotaRemaining ?? '不限'}</span>
+                      {(selectedSpace.owners || []).map(owner => <span key={owner} className="rounded-lg bg-slate-100 px-3 py-2">成员 {owner}</span>)}
+                    </div>
+                  </section>
+
+                  <section className="border-b border-slate-200 p-5">
+                    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <h4 className="font-semibold text-slate-900">审批策略</h4>
+                        <p className="mt-1 text-sm text-slate-500">控制配置发布和实验启动前是否需要人工确认。</p>
+                      </div>
+                      <div className="flex items-center gap-3 text-sm font-medium text-slate-700">
+                        {selectedDraft.approvalRequired ? <ShieldCheck size={18} className="text-[var(--brand)]" /> : <ShieldOff size={18} className="text-slate-400" />}
+                        {selectedDraft.approvalRequired ? '已启用' : '未启用'}
+                        {renderApprovalSwitch(
+                          selectedDraft.approvalRequired,
+                          value => updateDraft(selectedSpace.appId, 'approvalRequired', value),
+                          '切换审批策略'
+                        )}
+                      </div>
+                    </div>
+                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                      <label className="text-sm text-slate-600">
+                        审批人
+                        <input value={selectedDraft.approvalOwners} onChange={event => updateDraft(selectedSpace.appId, 'approvalOwners', event.target.value)} className="input mt-2" placeholder="多人使用逗号分隔" disabled={!selectedDraft.approvalRequired} />
+                      </label>
+                      <label className="text-sm text-slate-600">
+                        通过人数
+                        <input value={selectedDraft.approvalRequiredCount} onChange={event => updateDraft(selectedSpace.appId, 'approvalRequiredCount', event.target.value)} className="input mt-2" inputMode="numeric" disabled={!selectedDraft.approvalRequired} />
+                      </label>
+                      <label className="text-sm text-slate-600">
+                        审批时效（小时）
+                        <input value={selectedDraft.approvalSlaHours} onChange={event => updateDraft(selectedSpace.appId, 'approvalSlaHours', event.target.value)} className="input mt-2" inputMode="numeric" disabled={!selectedDraft.approvalRequired} />
+                      </label>
+                      <label className="text-sm text-slate-600">
+                        升级接收人
+                        <input value={selectedDraft.approvalEscalationOwners} onChange={event => updateDraft(selectedSpace.appId, 'approvalEscalationOwners', event.target.value)} className="input mt-2" placeholder="多人使用逗号分隔" disabled={!selectedDraft.approvalRequired} />
+                      </label>
+                    </div>
+                  </section>
+
+                  <section className="p-5">
+                    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <h4 className="font-semibold text-slate-900">发布窗口</h4>
+                        <p className="mt-1 text-sm text-slate-500">限制配置可以正式发布的星期和时间范围。</p>
+                      </div>
+                      <div className="flex items-center gap-3 text-sm font-medium text-slate-700">
+                        <Clock3 size={18} className={selectedDraft.releaseWindowEnabled ? 'text-[var(--brand)]' : 'text-slate-400'} />
+                        {selectedDraft.releaseWindowEnabled ? '已启用' : '未启用'}
+                        {renderApprovalSwitch(
+                          selectedDraft.releaseWindowEnabled,
+                          value => updateDraft(selectedSpace.appId, 'releaseWindowEnabled', value),
+                          '切换发布窗口'
+                        )}
+                      </div>
+                    </div>
+                    <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-[minmax(300px,1.5fr)_repeat(3,minmax(130px,1fr))]">
+                      <fieldset className="text-sm text-slate-600" disabled={!selectedDraft.releaseWindowEnabled}>
+                        <legend>发布星期</legend>
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {Object.entries(releaseWindowDayLabels).map(([day, label]) => {
+                            const numericDay = Number(day)
+                            const selected = getDraftReleaseWindowDays(selectedDraft.releaseWindowDays).has(numericDay)
+                            return (
+                              <button
+                                key={day}
+                                type="button"
+                                onClick={() => updateDraft(
+                                  selectedSpace.appId,
+                                  'releaseWindowDays',
+                                  toggleDraftReleaseWindowDay(selectedDraft.releaseWindowDays, numericDay)
+                                )}
+                                className={`h-10 min-w-10 rounded-lg border px-2 text-xs font-semibold transition-colors ${
+                                  selected
+                                    ? 'border-blue-200 bg-blue-50 text-[var(--brand)]'
+                                    : 'border-slate-200 bg-white text-slate-500'
+                                } disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400`}
+                                disabled={!selectedDraft.releaseWindowEnabled}
+                                aria-pressed={selected}
+                              >
+                                {label.replace('周', '')}
+                              </button>
+                            )
+                          })}
                         </div>
-                      </td>
-                      <td className="px-5 py-4">
-                        <input
-                          value={draft.defaultOwner}
-                          onChange={(event) => updateDraft(space.appId, 'defaultOwner', event.target.value)}
-                          className="input h-10 px-3 py-2"
-                          placeholder="默认负责人"
-                        />
-                        <div className="mt-2 flex flex-wrap gap-1">
-                          {(space.owners || []).slice(0, 3).map(owner => (
-                            <span key={owner} className="rounded-full border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600">
-                              {owner}
-                            </span>
-                          ))}
-                        </div>
-                      </td>
-                      <td className="px-5 py-4">
-                        <input
-                          value={draft.approvalOwners}
-                          onChange={(event) => updateDraft(space.appId, 'approvalOwners', event.target.value)}
-                          className="input h-10 px-3 py-2"
-                          placeholder="为空时使用默认负责人"
-                        />
-                        <div className="mt-2 flex flex-wrap gap-1">
-                          {(space.approvalOwners || []).slice(0, 4).map(owner => (
-                            <span key={owner} className="rounded-full border border-[#cde5d7] bg-[#f6fbf8] px-2 py-1 text-xs text-[#1e7e57]">
-                              {owner}
-                            </span>
-                          ))}
-                        </div>
-                      </td>
-                      <td className="px-5 py-4">
-                        <input
-                          value={draft.experimentQuota}
-                          onChange={(event) => updateDraft(space.appId, 'experimentQuota', event.target.value)}
-                          className="input h-10 px-3 py-2"
-                          placeholder="不限制"
-                          inputMode="numeric"
-                        />
-                        <p className="mt-2 text-xs text-slate-500">
-                          已用 {formatCount(space.quotaUsed)} / 剩余 {space.quotaRemaining ?? '不限'}
-                        </p>
-                      </td>
-                      <td className="px-5 py-4">
-                        <div className="flex items-center gap-2">
-                          {draft.approvalRequired ? (
-                            <ShieldCheck size={18} className="text-[var(--brand)]" />
-                          ) : (
-                            <ShieldOff size={18} className="text-slate-400" />
-                          )}
-                          {renderApprovalSwitch(
-                            draft.approvalRequired,
-                            value => updateDraft(space.appId, 'approvalRequired', value)
-                          )}
-                        </div>
-                        <p className="mt-2 text-xs text-slate-500">
-                          {draft.approvalRequired ? `至少 ${draft.approvalRequiredCount || 1} 人通过` : '不要求审批'}
-                        </p>
-                        <p className="mt-1 text-xs text-slate-400">
-                          策略 v{space.approvalPolicyVersion || 1}
-                        </p>
-                        <input
-                          value={draft.approvalRequiredCount}
-                          onChange={(event) => updateDraft(space.appId, 'approvalRequiredCount', event.target.value)}
-                          className="input mt-3 h-10 px-3 py-2"
-                          placeholder="通过人数"
-                          inputMode="numeric"
-                          disabled={!draft.approvalRequired}
-                        />
-                        <p className="mt-3 flex items-center gap-1 text-xs text-slate-500">
-                          <BellRing size={14} />
-                          {formatApprovalSla(space)}
-                        </p>
-                        <input
-                          value={draft.approvalSlaHours}
-                          onChange={(event) => updateDraft(space.appId, 'approvalSlaHours', event.target.value)}
-                          className="input mt-2 h-10 px-3 py-2"
-                          placeholder="SLA 小时"
-                          inputMode="numeric"
-                          disabled={!draft.approvalRequired}
-                        />
-                        <input
-                          value={draft.approvalEscalationOwners}
-                          onChange={(event) => updateDraft(space.appId, 'approvalEscalationOwners', event.target.value)}
-                          className="input mt-2 h-10 px-3 py-2"
-                          placeholder="升级接收人，逗号分隔"
-                          disabled={!draft.approvalRequired}
-                        />
-                      </td>
-                      <td className="px-5 py-4">
-                        <div className="flex items-center gap-2">
-                          <Clock3 size={18} className={draft.releaseWindowEnabled ? 'text-[var(--brand)]' : 'text-slate-400'} />
-                          {renderApprovalSwitch(
-                            draft.releaseWindowEnabled,
-                            value => updateDraft(space.appId, 'releaseWindowEnabled', value)
-                          )}
-                        </div>
-                        <p className="mt-2 text-xs text-slate-500">{formatReleaseWindow(space)}</p>
-                        <div className="mt-3 grid gap-2">
-                          <input
-                            value={draft.releaseWindowDays}
-                            onChange={(event) => updateDraft(space.appId, 'releaseWindowDays', event.target.value)}
-                            className="input h-10 px-3 py-2"
-                            placeholder="1,2,3,4,5"
-                            disabled={!draft.releaseWindowEnabled}
-                          />
-                          <div className="grid grid-cols-2 gap-2">
-                            <input
-                              value={draft.releaseWindowStartTime}
-                              onChange={(event) => updateDraft(space.appId, 'releaseWindowStartTime', event.target.value)}
-                              className="input h-10 px-3 py-2"
-                              type="time"
-                              disabled={!draft.releaseWindowEnabled}
-                            />
-                            <input
-                              value={draft.releaseWindowEndTime}
-                              onChange={(event) => updateDraft(space.appId, 'releaseWindowEndTime', event.target.value)}
-                              className="input h-10 px-3 py-2"
-                              type="time"
-                              disabled={!draft.releaseWindowEnabled}
-                            />
-                          </div>
-                          <input
-                            value={draft.releaseWindowTimezone}
-                            onChange={(event) => updateDraft(space.appId, 'releaseWindowTimezone', event.target.value)}
-                            className="input h-10 px-3 py-2"
-                            placeholder="Asia/Shanghai"
-                            disabled={!draft.releaseWindowEnabled}
-                          />
-                        </div>
-                      </td>
-                      <td className="px-5 py-4 text-slate-600">
-                        <p>{formatCount(space.experimentCount)} 个实验</p>
-                        <p className="mt-2 text-xs text-slate-500">{formatCount(space.runningExperimentCount)} 运行中</p>
-                      </td>
-                      <td className="px-5 py-4">
-                        <div className="flex flex-wrap gap-2">
-                          {space.registered ? (
-                            <span className="badge border border-blue-200 bg-blue-50 text-[var(--brand)]">注册表</span>
-                          ) : null}
-                          {space.configured ? (
-                            <span className="badge border border-slate-200 bg-white text-slate-600">API Key</span>
-                          ) : null}
-                        </div>
-                        <div className="mt-2 flex flex-wrap gap-1">
-                          {(space.scopes || []).map(scope => (
-                            <span key={scope} className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-500">
-                              {scope}
-                            </span>
-                          ))}
-                        </div>
-                      </td>
-                      <td className="px-5 py-4 text-right">
-                        <button
-                          type="button"
-                          className="btn-primary inline-flex items-center gap-2"
-                          onClick={() => saveApplicationSpace(space.appId, draft)}
-                          disabled={isSaving}
-                        >
-                          <Save size={16} />
-                          {isSaving ? '保存中' : '保存'}
-                        </button>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+                      </fieldset>
+                      <label className="text-sm text-slate-600">
+                        开始时间
+                        <input value={selectedDraft.releaseWindowStartTime} onChange={event => updateDraft(selectedSpace.appId, 'releaseWindowStartTime', event.target.value)} className="input mt-2" type="time" disabled={!selectedDraft.releaseWindowEnabled} />
+                      </label>
+                      <label className="text-sm text-slate-600">
+                        结束时间
+                        <input value={selectedDraft.releaseWindowEndTime} onChange={event => updateDraft(selectedSpace.appId, 'releaseWindowEndTime', event.target.value)} className="input mt-2" type="time" disabled={!selectedDraft.releaseWindowEnabled} />
+                      </label>
+                      <label className="text-sm text-slate-600">
+                        时区
+                        <select value={selectedDraft.releaseWindowTimezone} onChange={event => updateDraft(selectedSpace.appId, 'releaseWindowTimezone', event.target.value)} className="input mt-2" disabled={!selectedDraft.releaseWindowEnabled}>
+                          <option value="Asia/Shanghai">中国标准时间</option>
+                        </select>
+                      </label>
+                    </div>
+                  </section>
+                </div>
+              </div>
+            ) : (
+              <div className="flex min-h-[420px] items-center justify-center text-sm text-slate-500">从左侧选择一个应用</div>
+            )}
           </div>
         )}
       </section>
+
+      {createDialogOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 px-4 py-6" role="dialog" aria-modal="true">
+          <div className="flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="shrink-0 border-b border-slate-200 px-6 py-5">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="signal-label">注册应用</p>
+                  <h2 className="section-title mt-1">建立新应用</h2>
+                  <p className="mt-1 text-sm text-slate-500">完成应用信息后，再按需设置审批和发布规则。</p>
+                </div>
+                <button type="button" className="rounded-lg border border-slate-200 p-2 text-slate-500 hover:bg-slate-50" onClick={closeCreateDialog} title="关闭">
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="mt-5 grid grid-cols-[1fr_auto_1fr] items-center gap-3" aria-label="注册步骤">
+                <button type="button" className="flex items-center gap-3 text-left" onClick={() => setCreateStep(1)} aria-current={createStep === 1 ? 'step' : undefined}>
+                  <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold ${
+                    createStep === 1 ? 'bg-[var(--brand)] text-white' : 'bg-[#e8f5ee] text-[#1e7e57]'
+                  }`}>
+                    {createStep === 2 ? <Check size={16} /> : '1'}
+                  </span>
+                  <span><strong className="block text-sm text-slate-900">基本信息</strong><small className="text-xs text-slate-500">标识、名称和负责人</small></span>
+                </button>
+                <span className={`h-px w-16 ${createStep === 2 ? 'bg-[var(--brand)]' : 'bg-slate-200'}`} />
+                <button type="button" className="flex items-center gap-3 text-left disabled:cursor-not-allowed" onClick={() => createBasicInfoComplete && setCreateStep(2)} disabled={!createBasicInfoComplete} aria-current={createStep === 2 ? 'step' : undefined}>
+                  <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold ${
+                    createStep === 2 ? 'bg-[var(--brand)] text-white' : 'bg-slate-100 text-slate-500'
+                  }`}>2</span>
+                  <span><strong className="block text-sm text-slate-900">管理规则</strong><small className="text-xs text-slate-500">审批和发布时间</small></span>
+                </button>
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {createStep === 1 ? (
+                <section className="p-6">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <h3 className="font-semibold text-slate-900">填写应用信息</h3>
+                      <p className="mt-1 text-sm text-slate-500">标有“必填”的信息完成后可以继续。</p>
+                    </div>
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500">1 / 2</span>
+                  </div>
+
+                  <div className="mt-5 grid gap-x-5 gap-y-6 md:grid-cols-2">
+                    <label className="text-sm text-slate-700">
+                      <span className="flex items-center gap-2 font-medium">应用标识 <em className="not-italic text-[#b44f42]">必填</em></span>
+                      <input
+                        value={newAppId}
+                        onChange={event => setNewAppId(event.target.value.toLowerCase())}
+                        className={`input mt-2 ${normalizedNewAppId && (!newAppIdFormatValid || !newAppIdAvailable) ? 'border-[#d89a91]' : ''}`}
+                        placeholder="例如 phone-shop"
+                        aria-invalid={Boolean(normalizedNewAppId && (!newAppIdFormatValid || !newAppIdAvailable))}
+                      />
+                      <span className={`mt-1.5 block text-xs ${normalizedNewAppId && (!newAppIdFormatValid || !newAppIdAvailable) ? 'text-[#b44f42]' : 'text-slate-500'}`}>
+                        {!newAppIdFormatValid ? '仅支持小写字母、数字、短横线、下划线和点号，最长 128 位' : !newAppIdAvailable ? '该标识已存在，请更换' : '创建后不可修改'}
+                      </span>
+                    </label>
+                    <label className="text-sm text-slate-700">
+                      <span className="flex items-center gap-2 font-medium">展示名称 <em className="not-italic text-[#b44f42]">必填</em></span>
+                      <input value={newDraft.displayName} onChange={event => updateNewDraft('displayName', event.target.value)} className="input mt-2" placeholder="例如 二手手机商城" />
+                      <span className="mt-1.5 block text-xs text-slate-500">用于页面展示和搜索</span>
+                    </label>
+                    <label className="text-sm text-slate-700">
+                      <span className="flex items-center gap-2 font-medium">默认负责人 <em className="not-italic text-[#b44f42]">必填</em></span>
+                      <input value={newDraft.defaultOwner} onChange={event => updateNewDraft('defaultOwner', event.target.value)} className="input mt-2" placeholder="输入负责人" />
+                      <span className="mt-1.5 block text-xs text-slate-500">承接应用实验和异常处理</span>
+                    </label>
+                    <label className="text-sm text-slate-700">
+                      <span className="font-medium">实验配额 <em className="ml-2 not-italic text-slate-400">可选</em></span>
+                      <input
+                        value={newDraft.experimentQuota}
+                        onChange={event => updateNewDraft('experimentQuota', event.target.value)}
+                        className={`input mt-2 ${!newQuotaValid ? 'border-[#d89a91]' : ''}`}
+                        placeholder="留空表示不限制"
+                        inputMode="numeric"
+                        aria-invalid={!newQuotaValid}
+                      />
+                      <span className={`mt-1.5 block text-xs ${newQuotaValid ? 'text-slate-500' : 'text-[#b44f42]'}`}>
+                        {newQuotaValid ? '限制该应用可创建的实验数量' : '请输入大于或等于 0 的整数'}
+                      </span>
+                    </label>
+                  </div>
+                </section>
+              ) : (
+                <>
+                  <div className="grid gap-4 border-b border-slate-200 bg-slate-50 px-6 py-4 text-sm sm:grid-cols-4">
+                    <div><span className="block text-xs text-slate-500">应用</span><strong className="mt-1 block truncate text-slate-900">{newDraft.displayName}</strong></div>
+                    <div><span className="block text-xs text-slate-500">标识</span><strong className="mt-1 block truncate font-mono text-slate-900">{normalizedNewAppId}</strong></div>
+                    <div><span className="block text-xs text-slate-500">负责人</span><strong className="mt-1 block truncate text-slate-900">{newDraft.defaultOwner}</strong></div>
+                    <div><span className="block text-xs text-slate-500">实验配额</span><strong className="mt-1 block text-slate-900">{newQuotaText || '不限制'}</strong></div>
+                  </div>
+
+                  <section className="border-b border-slate-200 p-6">
+                    <div className="flex items-center justify-between gap-4">
+                      <div><h3 className="font-semibold text-slate-900">审批策略</h3><p className="mt-1 text-sm text-slate-500">开启后，配置发布和实验启动均需审批。</p></div>
+                      <div className="flex items-center gap-3 text-sm font-medium text-slate-600">
+                        {newDraft.approvalRequired ? '已开启' : '暂不开启'}
+                        {renderApprovalSwitch(newDraft.approvalRequired, value => updateNewDraft('approvalRequired', value), '切换审批策略')}
+                      </div>
+                    </div>
+                    {newDraft.approvalRequired ? (
+                      <div className="mt-5 grid gap-4 md:grid-cols-2">
+                        <label className="text-sm text-slate-600">审批人<input value={newDraft.approvalOwners} onChange={event => updateNewDraft('approvalOwners', event.target.value)} className="input mt-2" placeholder="留空使用默认负责人" /></label>
+                        <label className="text-sm text-slate-600">通过人数<input value={newDraft.approvalRequiredCount} onChange={event => updateNewDraft('approvalRequiredCount', event.target.value)} className={`input mt-2 ${!newApprovalRequiredCountValid ? 'border-[#d89a91]' : ''}`} inputMode="numeric" />{!newApprovalRequiredCountValid ? <span className="mt-1.5 block text-xs text-[#b44f42]">通过人数不能超过审批人数</span> : null}</label>
+                        <label className="text-sm text-slate-600">审批时效（小时）<input value={newDraft.approvalSlaHours} onChange={event => updateNewDraft('approvalSlaHours', event.target.value)} className={`input mt-2 ${!newApprovalSlaValid ? 'border-[#d89a91]' : ''}`} inputMode="numeric" placeholder="留空表示不限时" />{!newApprovalSlaValid ? <span className="mt-1.5 block text-xs text-[#b44f42]">请输入正整数</span> : null}</label>
+                        <label className="text-sm text-slate-600">超时接收人<input value={newDraft.approvalEscalationOwners} onChange={event => updateNewDraft('approvalEscalationOwners', event.target.value)} className="input mt-2" placeholder="留空使用审批人" /></label>
+                      </div>
+                    ) : null}
+                  </section>
+
+                  <section className="p-6">
+                    <div className="flex items-center justify-between gap-4">
+                      <div><h3 className="font-semibold text-slate-900">发布窗口</h3><p className="mt-1 text-sm text-slate-500">开启后，只允许在指定时间发布配置。</p></div>
+                      <div className="flex items-center gap-3 text-sm font-medium text-slate-600">
+                        {newDraft.releaseWindowEnabled ? '已开启' : '暂不开启'}
+                        {renderApprovalSwitch(newDraft.releaseWindowEnabled, value => updateNewDraft('releaseWindowEnabled', value), '切换发布窗口')}
+                      </div>
+                    </div>
+                    {newDraft.releaseWindowEnabled ? (
+                      <div className="mt-5 grid gap-4 md:grid-cols-2">
+                        <fieldset className="text-sm text-slate-600">
+                          <legend>允许发布的星期</legend>
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {Object.entries(releaseWindowDayLabels).map(([day, label]) => {
+                              const numericDay = Number(day)
+                              const selected = getDraftReleaseWindowDays(newDraft.releaseWindowDays).has(numericDay)
+                              return <button key={day} type="button" onClick={() => updateNewDraft('releaseWindowDays', toggleDraftReleaseWindowDay(newDraft.releaseWindowDays, numericDay))} className={`h-10 min-w-10 rounded-lg border px-2 text-xs font-semibold ${selected ? 'border-blue-200 bg-blue-50 text-[var(--brand)]' : 'border-slate-200 bg-white text-slate-500'}`} aria-pressed={selected}>{label.replace('周', '')}</button>
+                            })}
+                          </div>
+                        </fieldset>
+                        <label className="text-sm text-slate-600">时区<select value={newDraft.releaseWindowTimezone} onChange={event => updateNewDraft('releaseWindowTimezone', event.target.value)} className="input mt-2"><option value="Asia/Shanghai">中国标准时间</option></select></label>
+                        <label className="text-sm text-slate-600">开始时间<input value={newDraft.releaseWindowStartTime} onChange={event => updateNewDraft('releaseWindowStartTime', event.target.value)} className="input mt-2" type="time" /></label>
+                        <label className="text-sm text-slate-600">结束时间<input value={newDraft.releaseWindowEndTime} onChange={event => updateNewDraft('releaseWindowEndTime', event.target.value)} className={`input mt-2 ${!newReleaseWindowValid ? 'border-[#d89a91]' : ''}`} type="time" />{!newReleaseWindowValid ? <span className="mt-1.5 block text-xs text-[#b44f42]">结束时间必须晚于开始时间</span> : null}</label>
+                      </div>
+                    ) : null}
+                  </section>
+                </>
+              )}
+            </div>
+
+            <div className="flex shrink-0 items-center justify-between gap-4 border-t border-slate-200 bg-white px-6 py-4">
+              <p className="hidden text-xs text-slate-500 sm:block">{createStep === 1 ? '请先完成 3 项必填信息' : '确认规则后完成注册'}</p>
+              <div className="ml-auto flex gap-3">
+                {createStep === 1 ? (
+                  <>
+                    <button type="button" className="btn-secondary" onClick={closeCreateDialog}>取消</button>
+                    <button type="button" className="btn-primary" onClick={() => setCreateStep(2)} disabled={!createBasicInfoComplete}>
+                      下一步：设置管理规则
+                      <ArrowRight size={16} />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button type="button" className="btn-secondary" onClick={() => setCreateStep(1)}><ArrowLeft size={16} />上一步</button>
+                    <button type="button" className="btn-primary" onClick={() => saveApplicationSpace(newAppId, newDraft)} disabled={!createGovernanceComplete || savingAppId === normalizedNewAppId}>
+                      <Check size={16} />
+                      {savingAppId === normalizedNewAppId ? '注册中' : '完成注册'}
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
       </>
       ) : null}
     </div>

@@ -12,8 +12,13 @@ import {
   TrendingUp
 } from 'lucide-react'
 import { analysisAPI, experimentAPI } from '../services/api'
-import { buildDashboardMetrics } from '../utils/experimentMetrics'
-import { normalizeConfidence } from '../utils/aiDecisionTransformers'
+import { buildDashboardDecisionItems, buildDashboardMetrics } from '../utils/experimentMetrics'
+import {
+  getDecisionLabel,
+  getExperimentStatusLabel,
+  getGuardrailStatusLabel,
+  localizeSystemText,
+} from '../utils/uiLabels'
 
 const getDecisionTone = (decision) => {
   if (decision === 'GRADUATE') {
@@ -34,40 +39,6 @@ const getGuardrailTone = (status) => {
   }
   return 'border-blue-200 bg-blue-50 text-[var(--brand)]'
 }
-
-const buildDecisionItems = (experiments, decisionRecords) => experiments
-  .map(experiment => {
-    const decision = decisionRecords[experiment.id] || {}
-    const diagnosis = decision.diagnosis || {}
-    const graduation = decision.graduation || {}
-    const statistics = decision.statistics || {}
-    const summary = statistics.summary || {}
-    const riskCount = (graduation.riskFlags || diagnosis.riskFlags || []).length
-    const blockingIssues = statistics.dataQualityCheck?.blockingIssues || []
-
-    return {
-      id: experiment.id,
-      name: experiment.name,
-      status: experiment.status,
-      decision: graduation.decision || 'CONTINUE',
-      decisionSummary: graduation.summary || diagnosis.summary || '等待分析结果',
-      confidence: normalizeConfidence(graduation.confidence ?? diagnosis.confidence),
-      guardrailStatus: graduation.guardrailStatus || diagnosis.guardrailStatus || 'UNKNOWN',
-      totalVisitors: summary.totalVisitors || 0,
-      bestGroup: summary.bestPerformingGroup || '-',
-      riskCount,
-      blockingIssues
-    }
-  })
-  .sort((left, right) => {
-    if (left.guardrailStatus === 'BLOCKED' && right.guardrailStatus !== 'BLOCKED') {
-      return -1
-    }
-    if (left.guardrailStatus !== 'BLOCKED' && right.guardrailStatus === 'BLOCKED') {
-      return 1
-    }
-    return right.confidence - left.confidence
-  })
 
 const StatCard = ({ title, value, description, icon: Icon, toneClass }) => (
   <div className="signal-card">
@@ -100,27 +71,24 @@ export default function Dashboard() {
       const experimentResponse = await experimentAPI.list()
       const experimentList = experimentResponse.data || experimentResponse || []
       setExperiments(experimentList)
+      setDecisionRecords({})
+      setLoading(false)
 
-      const decisionEntries = await Promise.all(
+      const statisticsResults = await Promise.allSettled(
         experimentList.slice(0, 8).map(async experiment => {
-          const [statisticsRes, diagnosisRes, graduationRes] = await Promise.allSettled([
-            analysisAPI.getStatistics(experiment.id),
-            analysisAPI.getAIDiagnosis(experiment.id),
-            analysisAPI.getAIGraduationDecision(experiment.id)
-          ])
+          const statisticsRes = await analysisAPI.getStatistics(experiment.id)
 
           return [
             experiment.id,
-            {
-              statistics: statisticsRes.status === 'fulfilled' ? (statisticsRes.value.data || statisticsRes.value) : null,
-              diagnosis: diagnosisRes.status === 'fulfilled' ? (diagnosisRes.value.data || diagnosisRes.value) : null,
-              graduation: graduationRes.status === 'fulfilled' ? (graduationRes.value.data || graduationRes.value) : null
-            }
+            statisticsRes.data || statisticsRes
           ]
         })
       )
 
-      setDecisionRecords(Object.fromEntries(decisionEntries))
+      const statisticsEntries = statisticsResults
+        .filter(result => result.status === 'fulfilled')
+        .map(result => result.value)
+      setDecisionRecords(Object.fromEntries(statisticsEntries))
     } catch (error) {
       console.error('Failed to load workspace data:', error)
       setExperiments([])
@@ -131,36 +99,30 @@ export default function Dashboard() {
   }
 
   const metrics = useMemo(() => {
-    const statisticsByExperiment = Object.fromEntries(
-      Object.entries(decisionRecords).map(([experimentId, record]) => [experimentId, record.statistics])
-    )
-    return buildDashboardMetrics(experiments, statisticsByExperiment)
+    return buildDashboardMetrics(experiments, decisionRecords)
   }, [decisionRecords, experiments])
 
   const decisionItems = useMemo(
-    () => buildDecisionItems(experiments, decisionRecords),
+    () => buildDashboardDecisionItems(experiments, decisionRecords),
     [decisionRecords, experiments]
   )
 
   const blockedCount = decisionItems.filter(item => item.guardrailStatus === 'BLOCKED').length
-  const graduateReadyCount = decisionItems.filter(item => item.decision === 'GRADUATE').length
-  const avgConfidence = decisionItems.length > 0
-    ? Math.round(decisionItems.reduce((sum, item) => sum + item.confidence, 0) / decisionItems.length * 100)
-    : 0
+  const analysisReadyCount = decisionItems.filter(item => item.analysisReady).length
 
   const topBlocked = decisionItems.filter(item => item.guardrailStatus === 'BLOCKED').slice(0, 3)
-  const topGraduate = decisionItems.filter(item => item.decision === 'GRADUATE').slice(0, 3)
+  const topReady = decisionItems.filter(item => item.analysisReady).slice(0, 3)
   const insightTabs = [
     { key: 'facts', label: '总体', count: metrics.total },
     { key: 'blocked', label: '阻塞', count: topBlocked.length },
-    { key: 'graduate', label: '推进', count: topGraduate.length }
+    { key: 'ready', label: '就绪', count: topReady.length }
   ]
 
   return (
     <div className="space-y-6">
       <section className="flex flex-col gap-4 rounded-[1.4rem] border border-slate-200 bg-[rgba(255,255,255,0.82)] p-5 lg:flex-row lg:items-center lg:justify-between">
         <div className="max-w-3xl">
-          <div className="eyebrow mb-3">Workspace</div>
+          <div className="eyebrow mb-3">实验工作台</div>
           <h1 className="text-[2rem] font-bold tracking-[-0.04em] text-slate-900">先处理值得关注的实验</h1>
           <p className="mt-2 page-subtitle">把需要继续观察、需要处理风险、可以推进审核的实验放在同一个视图里。</p>
         </div>
@@ -196,16 +158,16 @@ export default function Dashboard() {
           toneClass="text-[#b44f42]"
         />
         <StatCard
-          title="可毕业实验"
-          value={graduateReadyCount}
-          description="当前倾向于毕业并继续推进的实验。"
+          title="数据就绪"
+          value={analysisReadyCount}
+          description="数据质量检查已通过，可以进入决策分析的实验。"
           icon={CheckCircle2}
           toneClass="text-[#1e7e57]"
         />
         <StatCard
-          title="平均信心"
-          value={`${avgConfidence}%`}
-          description="当前实验池总体结论的平均置信度。"
+          title="待补充数据"
+          value={Math.max(decisionItems.length - analysisReadyCount, 0)}
+          description="尚需补充分流、曝光或样本数据的实验。"
           icon={BrainCircuit}
           toneClass="text-[var(--brand)]"
         />
@@ -215,7 +177,7 @@ export default function Dashboard() {
         <div className="glass-card p-6">
           <div className="mb-5 flex items-center justify-between">
             <div>
-              <p className="signal-label">Priority Queue</p>
+              <p className="signal-label">优先队列</p>
               <h2 className="section-title mt-2">优先处理实验</h2>
             </div>
             <Link to="/experiments" className="btn-secondary">
@@ -247,21 +209,25 @@ export default function Dashboard() {
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-3">
                       <h3 className="text-lg font-bold tracking-[-0.03em] text-slate-900">{item.name}</h3>
-                        <span className={`badge border ${getGuardrailTone(item.guardrailStatus)}`}>{item.guardrailStatus}</span>
-                        <span className={`badge border ${getDecisionTone(item.decision)}`}>{item.decision}</span>
+                        <span className={`badge border ${getGuardrailTone(item.guardrailStatus)}`}>
+                          {getGuardrailStatusLabel(item.guardrailStatus)}
+                        </span>
+                        <span className={`badge border ${getDecisionTone(item.decision)}`}>
+                          {getExperimentStatusLabel(item.status)} · {getDecisionLabel(item.decision)}
+                        </span>
                       </div>
-                      <p className="mt-3 text-sm leading-7 text-slate-600">{item.decisionSummary}</p>
+                      <p className="mt-3 text-sm leading-7 text-slate-600">{localizeSystemText(item.decisionSummary)}</p>
                       <div className="mt-4 flex flex-wrap gap-4 text-sm text-slate-600">
                         <span>访客 {item.totalVisitors.toLocaleString()}</span>
-                        <span>最佳组 {item.bestGroup}</span>
+                        <span>最佳组 {localizeSystemText(item.bestGroup)}</span>
                         <span>风险 {item.riskCount}</span>
-                        <span>置信度 {(item.confidence * 100).toFixed(0)}%</span>
+                        <span>{item.analysisReady ? '数据已就绪' : '数据待补充'}</span>
                       </div>
                     </div>
                     <div className="grid min-w-[220px] gap-2">
                       {(item.blockingIssues.length > 0 ? item.blockingIssues : ['暂无阻塞说明']).slice(0, 2).map(issue => (
                         <div key={issue} className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
-                          {issue}
+                          {localizeSystemText(issue)}
                         </div>
                       ))}
                     </div>
@@ -275,7 +241,7 @@ export default function Dashboard() {
         <div className="glass-card p-6">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <p className="signal-label">System Facts</p>
+              <p className="signal-label">总体事实</p>
               <h2 className="section-title mt-2">实验总体情况</h2>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -337,7 +303,7 @@ export default function Dashboard() {
                       <div className="flex items-center justify-between gap-4">
                         <div>
                           <p className="font-semibold text-slate-900">{item.name}</p>
-                          <p className="mt-1 text-sm text-[#9a5a52]">{item.decisionSummary}</p>
+                          <p className="mt-1 text-sm text-[#9a5a52]">{localizeSystemText(item.decisionSummary)}</p>
                         </div>
                         <ShieldAlert size={18} className="text-[#b44f42]" />
                       </div>
@@ -348,22 +314,22 @@ export default function Dashboard() {
             </div>
           ) : null}
 
-          {activeInsightPanel === 'graduate' ? (
+          {activeInsightPanel === 'ready' ? (
             <div className="mt-5">
               <div className="mb-4 flex items-center gap-3">
                 <TrendingUp className="text-[#1e7e57]" size={18} />
-                <h3 className="section-title">可以继续推进</h3>
+                <h3 className="section-title">可以进入决策分析</h3>
               </div>
               <div className="space-y-3">
-                {topGraduate.length === 0 ? (
-                  <p className="text-sm leading-7 text-slate-500">当前没有特别适合继续推进审核的实验。</p>
+                {topReady.length === 0 ? (
+                  <p className="text-sm leading-7 text-slate-500">当前还没有数据质量检查通过的实验。</p>
                 ) : (
-                  topGraduate.map(item => (
+                  topReady.map(item => (
                     <Link key={item.id} to={`/experiments/${item.id}/decision`} className="block rounded-2xl border border-[#cde5d7] bg-[#f6fbf8] p-4">
                       <div className="flex items-center justify-between gap-4">
                         <div>
                           <p className="font-semibold text-slate-900">{item.name}</p>
-                          <p className="mt-1 text-sm text-[#3f6f5a]">置信度 {(item.confidence * 100).toFixed(0)}%，可继续推进审核。</p>
+                          <p className="mt-1 text-sm text-[#3f6f5a]">数据质量检查已通过，可查看统计结果并生成决策建议。</p>
                         </div>
                         <CheckCircle2 size={18} className="text-[#1e7e57]" />
                       </div>

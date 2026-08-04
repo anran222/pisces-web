@@ -99,7 +99,7 @@ test('buildDataPipelineStatus exposes totals and group pipeline counts', () => {
     rejectedCount: 0,
     unfinishedCount: 0,
     maxPendingSeconds: 0,
-    maxPendingLabel: '0s'
+    maxPendingLabel: '0 秒'
   })
 })
 
@@ -188,6 +188,6 @@ test('buildDataPipelineStatus maps event pipeline retry and lag states', () => {
     rejectedCount: 0,
     unfinishedCount: 4,
     maxPendingSeconds: 125,
-    maxPendingLabel: '2m'
+    maxPendingLabel: '2 分钟'
   })
 })

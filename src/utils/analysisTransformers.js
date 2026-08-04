@@ -1,3 +1,5 @@
+import { localizeSystemText } from './uiLabels.js'
+
 const RATE_METRIC_TYPES = new Set(['CONVERSION_RATE', 'CLICK_RATE'])
 
 const isRateMetric = (timeline) => {
@@ -68,7 +70,7 @@ export function buildGroupChartData(statistics, primaryMetricDefinition, compari
   const comparisons = comparison?.comparisons || {}
 
   return Object.values(statistics?.groupStatistics || {}).map(group => ({
-    group: group.groupName || group.groupId,
+    group: localizeSystemText(group.groupName || group.groupId),
     primaryMetric: primaryMetricKey
       ? formatMetricChartValue(group.metricValues?.[primaryMetricKey], aggregationType)
       : Number(((group.conversionRate || 0) * 100).toFixed(2)),

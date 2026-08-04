@@ -33,3 +33,15 @@ test('filterExperimentsBySearch matches name id app and owner', () => {
   assert.deepEqual(filterExperimentsBySearch(experiments, 'shop'), [experiments[0]])
   assert.deepEqual(filterExperimentsBySearch(experiments, 'exp-b'), [experiments[1]])
 })
+
+test('filterExperimentsBySearch matches application display name', () => {
+  const experiments = [
+    { id: 'exp-a', name: '价格实验', appId: 'shop-app', owner: 'alice' },
+    { id: 'exp-b', name: '搜索实验', appId: 'search-app', owner: 'bob' }
+  ]
+
+  assert.deepEqual(filterExperimentsBySearch(experiments, '二手手机商城', {
+    'shop-app': '二手手机商城',
+    'search-app': '站内搜索'
+  }), [experiments[0]])
+})

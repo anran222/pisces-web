@@ -38,7 +38,7 @@ export const buildExperimentListParams = (filters = {}) => {
   return params
 }
 
-export const filterExperimentsBySearch = (experiments = [], search = '') => {
+export const filterExperimentsBySearch = (experiments = [], search = '', applicationNames = {}) => {
   const normalizedSearch = trimToNull(search)?.toLowerCase()
   if (!normalizedSearch) {
     return experiments
@@ -47,6 +47,7 @@ export const filterExperimentsBySearch = (experiments = [], search = '') => {
     experiment?.name,
     experiment?.id,
     experiment?.appId,
-    experiment?.owner
+    experiment?.owner,
+    applicationNames[experiment?.appId]
   ].some(value => String(value || '').toLowerCase().includes(normalizedSearch)))
 }

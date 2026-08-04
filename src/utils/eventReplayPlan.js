@@ -140,12 +140,12 @@ export const getReplayModeLabel = (replay = null) => {
     return '全量重建'
   }
   if (replay.replayMode === 'FILTERED_DERIVED_COPY_REPLAY') {
-    return '筛选复制 replay'
+    return '筛选复制重放'
   }
   if (replay.replayMode === 'FILTERED_FACT_SELECTION_PLAN') {
     return '筛选计划'
   }
-  return replay.replayMode || '-'
+  return replay.replayMode ? '其他重放模式' : '-'
 }
 
 export const getReplayPlanModeLabel = getReplayModeLabel

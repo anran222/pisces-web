@@ -97,7 +97,7 @@ export const parseApprovalSlaHours = (approvalSlaHoursText) => {
 
   const approvalSlaHours = Number(slaText)
   if (!Number.isInteger(approvalSlaHours) || approvalSlaHours < 1) {
-    throw new Error('审批 SLA 小时数必须是正整数')
+    throw new Error('审批时效小时数必须是正整数')
   }
   return approvalSlaHours
 }

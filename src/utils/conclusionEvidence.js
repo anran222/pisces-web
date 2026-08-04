@@ -66,7 +66,7 @@ export const getConclusionEvidenceBlocker = ({
 
   if (targetStatus === 'GRADUATED') {
     if (latestReportSnapshot.hasSrm === true) {
-      return '最新报告快照存在 SRM 风险，不能确认毕业。'
+      return '最新报告快照存在样本比例异常风险，不能确认毕业。'
     }
 
     if ((latestReportSnapshot.breachedGuardrails || []).length > 0) {

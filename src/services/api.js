@@ -175,11 +175,17 @@ export const applicationAPI = {
   // 查询当前 key 可见的应用空间
   list: () => api.get('/applications'),
 
-  // 注册或更新应用空间治理信息
+  // 注册新的应用空间
+  register: (appId, data) => api.post(`/applications/${appId}`, data),
+
+  // 更新应用空间治理信息
   upsert: (appId, data) => api.put(`/applications/${appId}`, data),
 
   // 查询应用级事件和指标字典
   getDictionary: (appId) => api.get(`/applications/${appId}/dictionary`),
+
+  // 新增或更新应用级事件和指标字典
+  upsertDictionary: (appId, data) => api.put(`/applications/${appId}/dictionary`, data),
 }
 
 // 流量分配 API

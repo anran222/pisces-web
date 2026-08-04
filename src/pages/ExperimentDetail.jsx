@@ -23,10 +23,12 @@ import {
   ChevronUp,
   ShieldCheck,
   ShieldOff,
-  ShieldX
+  ShieldX,
+  Boxes
 } from 'lucide-react'
 import DataPipelineStatus from '../components/DataPipelineStatus'
-import { experimentAPI, analysisAPI, trafficAPI } from '../services/api'
+import ExperimentEffectPreview from '../components/ExperimentEffectPreview'
+import { experimentAPI, analysisAPI, trafficAPI, applicationAPI } from '../services/api'
 import {
   buildExperimentStatsHighlights,
   buildMabGroupRows,
@@ -40,7 +42,14 @@ import {
   requiresConclusionEvidence,
   resolveLatestReportSnapshot
 } from '../utils/conclusionEvidence'
-import { buildEditableGroupSummary, getEditableGroupPanelKey } from '../utils/editableGroupUtils'
+import {
+  buildEditableGroupSummary,
+  buildExperimentGroupTrafficAllocation,
+  buildNextExperimentGroup,
+  getEditableGroupPanelKey,
+  getOrderedGroupEntries,
+  rebalanceExperimentGroupTraffic
+} from '../utils/editableGroupUtils'
 import {
   buildEmptyEventDefinition,
   buildEmptyGroupConfigField,
@@ -53,6 +62,16 @@ import {
   METRIC_AGGREGATION_TYPE_OPTIONS,
   METRIC_DENOMINATOR_TYPE_OPTIONS
 } from '../utils/aiDecisionTransformers'
+import {
+  getConclusionStatusLabel,
+  getEventCategoryLabel,
+  getMetricAggregationLabel,
+  getMetricDenominatorLabel,
+  getTrafficStrategyLabel,
+  getValueTypeLabel,
+  localizeSystemText,
+  TRAFFIC_STRATEGY_OPTIONS,
+} from '../utils/uiLabels'
 
 const statusConfig = {
   RUNNING: { badge: 'badge-running', text: '运行中' },
@@ -143,7 +162,7 @@ const formatConfigValue = (value) => {
   if (typeof value === 'object') {
     return JSON.stringify(value, null, 2)
   }
-  return String(value)
+  return localizeSystemText(value)
 }
 
 const getSchemaFieldLabel = (field) => field?.label || field?.key || '未命名字段'
@@ -154,7 +173,9 @@ const normalizeNumberInput = (value, fallback) => {
   return Number.isFinite(nextValue) ? nextValue : fallback
 }
 const formatDateTimeLocalValue = (value) => (value || '').slice(0, 16)
-const formatAuditDateTime = (value) => (value ? new Date(value).toLocaleString() : '-')
+const formatAuditDateTime = (value) => (
+  value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'
+)
 const getResponseData = (value) => (
   value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'data')
     ? value.data
@@ -170,7 +191,7 @@ const formatConfigSourceType = (sourceType) => {
   if (sourceType === 'PUBLISH') {
     return '发布'
   }
-  return sourceType || '-'
+  return sourceType ? '其他来源' : '-'
 }
 const formatConfigVersionScale = (version) => (
   `${version?.groupCount ?? 0}组 / ${version?.eventDefinitionCount ?? 0}事件 / ${version?.metricDefinitionCount ?? 0}指标`
@@ -183,18 +204,13 @@ const formatAuditStatusChange = (auditLog) => {
     return '-'
   }
   if (!auditLog.beforeStatus) {
-    return auditLog.afterStatus || '-'
+    return localizeSystemText(auditLog.afterStatus) || '-'
   }
-  return `${auditLog.beforeStatus} -> ${auditLog.afterStatus || '-'}`
+  return `${localizeSystemText(auditLog.beforeStatus)} → ${localizeSystemText(auditLog.afterStatus) || '-'}`
 }
 const getOptionLabel = (options, value, fallback = value) => (
   options.find(option => option.value === value)?.label || fallback
 )
-const buildTrafficAllocation = (groups = []) => groups.map(group => ({
-  group: group.id,
-  ratio: Number(group.trafficRatio) || 0
-}))
-
 const buildSchemaKeys = (schema = []) => schema
   .map(field => field?.key)
   .filter(Boolean)
@@ -229,10 +245,34 @@ const buildGroupConfigEntries = (config = {}, schema = []) => {
 const getMissingRequiredDraftMessage = (draftPayload) => {
   const eventDefinitions = draftPayload?.eventDefinitions || []
   const metricDefinitions = draftPayload?.metricDefinitions || []
+  const groups = draftPayload?.groups || []
   const primaryMetricCount = metricDefinitions.filter(metric => metric?.primaryMetric).length
 
   if (!normalizeText(draftPayload?.name)) {
     return '请填写实验名称'
+  }
+  if (groups.length < 2) {
+    return '请至少保留两个实验组'
+  }
+  if (groups.some(group => !normalizeText(group?.id) || !normalizeText(group?.name))) {
+    return '请完整填写实验组标识和名称'
+  }
+  if (new Set(groups.map(group => normalizeText(group.id))).size !== groups.length) {
+    return '实验组标识不能重复'
+  }
+  const totalGroupTraffic = groups.reduce((total, group) => total + Number(group.trafficRatio || 0), 0)
+  if (Math.abs(totalGroupTraffic - 1) > 0.001) {
+    return '实验组流量比例之和必须为 1'
+  }
+  const requiredSchemaFields = (draftPayload?.groupConfigSchema || [])
+    .filter(field => field?.required && normalizeText(field?.key))
+  for (const group of groups) {
+    for (const field of requiredSchemaFields) {
+      const fieldValue = group?.config?.[field.key]
+      if (fieldValue === null || fieldValue === undefined || fieldValue === '') {
+        return `实验组「${group.name || group.id}」缺少必填字段「${field.label || field.key}」`
+      }
+    }
   }
   if (eventDefinitions.length === 0) {
     return '请至少定义一个事件'
@@ -242,7 +282,7 @@ const getMissingRequiredDraftMessage = (draftPayload) => {
       return '请完整填写事件定义'
     }
     if (!EVENT_KEY_PATTERN.test(normalizeText(eventDefinition.key).toUpperCase())) {
-      return '事件编码只支持大写英文、数字和下划线'
+      return '事件编码只支持大写字母、数字和下划线'
     }
   }
   if (metricDefinitions.length === 0) {
@@ -256,7 +296,7 @@ const getMissingRequiredDraftMessage = (draftPayload) => {
       return '请完整填写指标定义'
     }
     if (!EVENT_KEY_PATTERN.test(normalizeText(metricDefinition.key).toUpperCase())) {
-      return '指标编码只支持大写英文、数字和下划线'
+      return '指标编码只支持大写字母、数字和下划线'
     }
     if (!normalizeText(metricDefinition?.numeratorEventType)) {
       return '请为指标选择事件'
@@ -274,6 +314,7 @@ export default function ExperimentDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
   const [experiment, setExperiment] = useState(null)
+  const [applicationSpaces, setApplicationSpaces] = useState([])
   const [statistics, setStatistics] = useState(null)
   const [mabSummary, setMabSummary] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -314,7 +355,7 @@ export default function ExperimentDetail() {
   const [configVersionAction, setConfigVersionAction] = useState('')
   const [expandedGroupId, setExpandedGroupId] = useState(null)
   const [expandedEditGroupPanels, setExpandedEditGroupPanels] = useState({})
-  const [activeDetailPanel, setActiveDetailPanel] = useState('data')
+  const [activeDetailPanel, setActiveDetailPanel] = useState('effect')
   const [activeEditPanel, setActiveEditPanel] = useState('basic')
   const [activeConfigPanel, setActiveConfigPanel] = useState('draft')
   const [activeRuntimePanel, setActiveRuntimePanel] = useState('overview')
@@ -323,6 +364,26 @@ export default function ExperimentDetail() {
   useEffect(() => {
     loadData()
   }, [id])
+
+  useEffect(() => {
+    let isActive = true
+
+    const loadApplicationSpaces = async () => {
+      try {
+        const response = await applicationAPI.list()
+        if (isActive) {
+          setApplicationSpaces(getResponseData(response) || [])
+        }
+      } catch (error) {
+        console.warn('Failed to load application spaces:', error)
+      }
+    }
+
+    loadApplicationSpaces()
+    return () => {
+      isActive = false
+    }
+  }, [])
 
   const loadData = async () => {
     let shouldLoadMabSummary = false
@@ -381,29 +442,29 @@ export default function ExperimentDetail() {
         setStatistics(getResponseData(statsRes.value))
       } else {
         setStatistics(null)
-        setStatsError(statsRes.reason?.response?.data?.message || statsRes.reason?.message || '暂无统计数据')
+        setStatsError(localizeSystemText(statsRes.reason?.response?.data?.message || statsRes.reason?.message || '暂无统计数据'))
       }
 
       if (reportSnapshotRes.status === 'fulfilled') {
         setReportSnapshots(getResponseData(reportSnapshotRes.value) || [])
       } else {
         setReportSnapshots([])
-        setReportSnapshotError(
+        setReportSnapshotError(localizeSystemText(
           reportSnapshotRes.reason?.response?.data?.message
             || reportSnapshotRes.reason?.message
             || '报告快照暂不可用'
-        )
+        ))
       }
 
       if (eventPipelineRes.status === 'fulfilled') {
         setEventPipelineStatus(getResponseData(eventPipelineRes.value))
       } else {
         setEventPipelineStatus(null)
-        setEventPipelineError(
+        setEventPipelineError(localizeSystemText(
           eventPipelineRes.reason?.response?.data?.message
             || eventPipelineRes.reason?.message
             || '事件管道状态暂不可用'
-        )
+        ))
       }
 
       if (eventReplayJobRes.status === 'fulfilled') {
@@ -416,22 +477,22 @@ export default function ExperimentDetail() {
         setAuditLogs(getResponseData(auditLogRes.value) || [])
       } else {
         setAuditLogs([])
-        setAuditLogError(
+        setAuditLogError(localizeSystemText(
           auditLogRes.reason?.response?.data?.message
             || auditLogRes.reason?.message
             || '审计日志暂不可用'
-        )
+        ))
       }
 
       if (configVersionRes.status === 'fulfilled') {
         setConfigVersions(getResponseData(configVersionRes.value) || [])
       } else {
         setConfigVersions([])
-        setConfigVersionError(
+        setConfigVersionError(localizeSystemText(
           configVersionRes.reason?.response?.data?.message
             || configVersionRes.reason?.message
             || '配置版本暂不可用'
-        )
+        ))
       }
 
       if (configDraftRes.status === 'fulfilled') {
@@ -439,22 +500,22 @@ export default function ExperimentDetail() {
         setConfigDraft(draftData || null)
       } else {
         setConfigDraft(null)
-        setConfigDraftError(
+        setConfigDraftError(localizeSystemText(
           configDraftRes.reason?.response?.data?.message
             || configDraftRes.reason?.message
             || '配置草稿暂不可用'
-        )
+        ))
       }
 
       if (configDraftApprovalRes.status === 'fulfilled') {
         setConfigDraftApprovals(getResponseData(configDraftApprovalRes.value) || [])
       } else {
         setConfigDraftApprovals([])
-        setConfigDraftApprovalError(
+        setConfigDraftApprovalError(localizeSystemText(
           configDraftApprovalRes.reason?.response?.data?.message
             || configDraftApprovalRes.reason?.message
             || '配置草稿审批历史暂不可用'
-        )
+        ))
       }
     } catch (error) {
       console.error('Failed to load experiment:', error)
@@ -494,7 +555,7 @@ export default function ExperimentDetail() {
       }
       await loadData()
     } catch (error) {
-      alert('操作失败: ' + (error.response?.data?.message || error.message))
+      alert('操作失败：' + localizeSystemText(error.response?.data?.message || error.message))
     } finally {
       setActionLoading(false)
     }
@@ -507,10 +568,10 @@ export default function ExperimentDetail() {
         visitorCount: 150,
         daysAgo: 7
       })
-      alert(response.message || '实验数据生成完成')
+      alert(localizeSystemText(response.message || '实验数据生成完成'))
       await loadData()
     } catch (error) {
-      alert('生成实验数据失败: ' + (error.response?.data?.message || error.message))
+      alert('生成实验数据失败：' + localizeSystemText(error.response?.data?.message || error.message))
     } finally {
       setActionLoading(false)
     }
@@ -520,10 +581,10 @@ export default function ExperimentDetail() {
     try {
       setEventPipelineActionLoading('retry')
       const response = await analysisAPI.retryDeadEvents(id)
-      alert(response.message || response.data?.message || '死信事件已重新投递')
+      alert(localizeSystemText(response.message || response.data?.message || '死信事件已重新投递'))
       await loadData()
     } catch (error) {
-      alert('重投死信失败: ' + (error.response?.data?.message || error.message))
+      alert('重投死信失败：' + localizeSystemText(error.response?.data?.message || error.message))
     } finally {
       setEventPipelineActionLoading('')
     }
@@ -533,10 +594,10 @@ export default function ExperimentDetail() {
     try {
       setEventPipelineActionLoading('replay')
       const response = await analysisAPI.replayEventPipeline(id)
-      alert(response.message || response.data?.message || '事件管道派生数据已重建')
+      alert(localizeSystemText(response.message || response.data?.message || '事件管道派生数据已重建'))
       await loadData()
     } catch (error) {
-      alert('重放派生数据失败: ' + (error.response?.data?.message || error.message))
+      alert('重放派生数据失败：' + localizeSystemText(error.response?.data?.message || error.message))
     } finally {
       setEventPipelineActionLoading('')
     }
@@ -550,7 +611,7 @@ export default function ExperimentDetail() {
       setEventReplayPlan(getResponseData(response))
     } catch (error) {
       setEventReplayPlan(null)
-      setEventReplayPlanError(error.response?.data?.message || error.message || '重放计划生成失败')
+      setEventReplayPlanError(localizeSystemText(error.response?.data?.message || error.message || '重放计划生成失败'))
     } finally {
       setEventReplayPlanLoading(false)
     }
@@ -563,10 +624,10 @@ export default function ExperimentDetail() {
       const response = repairingSegment
         ? await analysisAPI.repairEventMaterializationSegment(id, segmentIndex, request)
         : await analysisAPI.repairEventMaterialization(id, request)
-      alert(response.message || response.data?.message || '缺失派生物化账本已修复')
+      alert(localizeSystemText(response.message || response.data?.message || '缺失派生物化账本已修复'))
       await loadData()
     } catch (error) {
-      alert('修复缺账本失败: ' + (error.response?.data?.message || error.message))
+      alert('修复缺账本失败：' + localizeSystemText(error.response?.data?.message || error.message))
     } finally {
       setEventPipelineActionLoading('')
     }
@@ -576,10 +637,10 @@ export default function ExperimentDetail() {
     try {
       setEventPipelineActionLoading('cancel-replay')
       const response = await analysisAPI.cancelEventReplayJob(id, replayJobId)
-      alert(response.message || response.data?.message || '事件重放任务已取消')
+      alert(localizeSystemText(response.message || response.data?.message || '事件重放任务已取消'))
       await loadData()
     } catch (error) {
-      alert('取消重放任务失败: ' + (error.response?.data?.message || error.message))
+      alert('取消重放任务失败：' + localizeSystemText(error.response?.data?.message || error.message))
     } finally {
       setEventPipelineActionLoading('')
     }
@@ -621,7 +682,42 @@ export default function ExperimentDetail() {
         groups,
         traffic: {
           ...current.traffic,
-          allocation: buildTrafficAllocation(groups)
+          allocation: buildExperimentGroupTrafficAllocation(groups)
+        }
+      }
+    })
+  }
+
+  const addExperimentGroup = () => {
+    setEditDraft(current => {
+      const nextGroup = buildNextExperimentGroup(current.groups || [])
+      const groups = rebalanceExperimentGroupTraffic([...(current.groups || []), nextGroup])
+      return {
+        ...current,
+        groups,
+        traffic: {
+          ...current.traffic,
+          allocation: buildExperimentGroupTrafficAllocation(groups)
+        }
+      }
+    })
+  }
+
+  const removeExperimentGroup = (index) => {
+    setEditDraft(current => {
+      if ((current.groups || []).length <= 2) {
+        return current
+      }
+
+      const groups = rebalanceExperimentGroupTraffic(
+        (current.groups || []).filter((_, groupIndex) => groupIndex !== index)
+      )
+      return {
+        ...current,
+        groups,
+        traffic: {
+          ...current.traffic,
+          allocation: buildExperimentGroupTrafficAllocation(groups)
         }
       }
     })
@@ -772,12 +868,17 @@ export default function ExperimentDetail() {
     }))
   }
 
-  const handleEditStart = () => {
+  const handleEditStart = (initialPanel = 'basic') => {
     setEditDraft(buildExperimentDraftFromResponse(configDraft?.draftExperiment || experiment))
     setConfigDraftComment(configDraft?.draftComment || '')
     setExpandedEditGroupPanels({})
-    setActiveEditPanel('basic')
+    setActiveEditPanel(initialPanel)
     setIsEditing(true)
+  }
+
+  const addSchemaFieldFromGroups = () => {
+    addSchemaField()
+    setActiveEditPanel('schema')
   }
 
   const handleEditCancel = () => {
@@ -803,7 +904,7 @@ export default function ExperimentDetail() {
       await loadData()
       setIsEditing(false)
     } catch (error) {
-      alert('保存配置草稿失败: ' + (error.response?.data?.message || error.message))
+      alert('保存配置草稿失败：' + localizeSystemText(error.response?.data?.message || error.message))
     } finally {
       setSavingExperiment(false)
     }
@@ -849,7 +950,7 @@ export default function ExperimentDetail() {
       await loadData()
       setConclusionSuccess('结论状态已保存，证据版本已绑定。')
     } catch (error) {
-      setConclusionError(error.response?.data?.message || error.message || '更新结论状态失败')
+      setConclusionError(localizeSystemText(error.response?.data?.message || error.message || '更新结论状态失败'))
       setConclusionSuccess('')
     } finally {
       setConclusionSaving(false)
@@ -863,7 +964,7 @@ export default function ExperimentDetail() {
       await analysisAPI.createReportSnapshot(id, 'frontend')
       await loadData()
     } catch (error) {
-      setReportSnapshotError(error.response?.data?.message || error.message || '生成报告快照失败')
+      setReportSnapshotError(localizeSystemText(error.response?.data?.message || error.message || '生成报告快照失败'))
     } finally {
       setReportSnapshotCreating(false)
     }
@@ -875,7 +976,7 @@ export default function ExperimentDetail() {
       await experimentAPI.updateApprovalStatus(id, approvalStatus, approvalComment, 'frontend')
       await loadData()
     } catch (error) {
-      alert('更新审批状态失败: ' + (error.response?.data?.message || error.message))
+      alert('更新审批状态失败：' + localizeSystemText(error.response?.data?.message || error.message))
     } finally {
       setApprovalSaving('')
     }
@@ -895,7 +996,7 @@ export default function ExperimentDetail() {
       setConfigPublishComment('')
       await loadData()
     } catch (error) {
-      alert('发布配置失败: ' + (error.response?.data?.message || error.message))
+      alert('发布配置失败：' + localizeSystemText(error.response?.data?.message || error.message))
     } finally {
       setConfigVersionAction('')
     }
@@ -924,7 +1025,7 @@ export default function ExperimentDetail() {
       setConfigDraftPublishComment('')
       await loadData()
     } catch (error) {
-      alert('发布配置草稿失败: ' + (error.response?.data?.message || error.message))
+      alert('发布配置草稿失败：' + localizeSystemText(error.response?.data?.message || error.message))
     } finally {
       setConfigVersionAction('')
     }
@@ -951,7 +1052,7 @@ export default function ExperimentDetail() {
       })
       await loadData()
     } catch (error) {
-      alert('回滚配置失败: ' + (error.response?.data?.message || error.message))
+      alert('回滚配置失败：' + localizeSystemText(error.response?.data?.message || error.message))
     } finally {
       setConfigVersionAction('')
     }
@@ -1006,6 +1107,8 @@ export default function ExperimentDetail() {
   const mabGroupRows = buildMabGroupRows(mabSummary, experimentGroups)
   const leadingGroupName = resolveExperimentGroupName(mabSummary?.leadingGroup, experimentGroups)
   const primaryMetricDefinition = resolvePrimaryMetricDefinition(experiment, statistics?.summary)
+  const applicationSpace = applicationSpaces.find(space => space.appId === experiment.appId)
+  const applicationName = applicationSpace?.displayName || experiment.appId || '未关联应用空间'
   const editGroups = editDraft?.groups || []
   const editEventDefinitions = editDraft?.eventDefinitions || []
   const editMetricDefinitions = editDraft?.metricDefinitions || []
@@ -1059,6 +1162,7 @@ export default function ExperimentDetail() {
     ? Object.keys(statistics.groupStatistics).length
     : 0
   const detailTabs = [
+    { key: 'effect', label: '应用效果', count: Object.keys(experimentGroups).length },
     { key: 'data', label: '数据链路', count: eventReplayJobs.length + (eventReplayPlan ? 1 : 0) },
     { key: 'config', label: '配置版本', count: configVersions.length + (hasConfigDraft ? 1 : 0) },
     { key: 'audit', label: '审计', count: auditLogs.length },
@@ -1068,7 +1172,7 @@ export default function ExperimentDetail() {
     { key: 'stats', label: '统计', count: statisticsGroupCount + (mabSummary ? 1 : 0) }
   ]
   const editTabs = [
-    { key: 'basic', label: '基础', count: 4 },
+    { key: 'basic', label: '基础', count: 5 },
     { key: 'events', label: '事件', count: editEventDefinitions.length },
     { key: 'metrics', label: '指标', count: editMetricDefinitions.length },
     { key: 'schema', label: '字段', count: editGroupConfigSchema.length },
@@ -1087,13 +1191,13 @@ export default function ExperimentDetail() {
   ]
   const statsTabs = [
     { key: 'groups', label: '分组统计', count: statisticsGroupCount },
-    { key: 'mab', label: 'MAB 状态', count: mabSummary ? mabGroupRows.length || 1 : 0 }
+    { key: 'mab', label: '动态分流状态', count: mabSummary ? mabGroupRows.length || 1 : 0 }
   ]
 
   return (
     <div className="space-y-6">
-      <section className="glass-card p-6">
-        <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+      <section className="glass-card p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex items-start gap-4">
             <button
               onClick={() => navigate('/experiments')}
@@ -1103,17 +1207,17 @@ export default function ExperimentDetail() {
             </button>
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-3">
-                <h1 className="page-title">{experiment.name}</h1>
+                <h1 className="text-2xl font-bold leading-tight text-slate-950 lg:text-3xl">{experiment.name}</h1>
                 <span className={`badge ${status.badge}`}>{status.text}</span>
               </div>
               <p className="page-subtitle mt-2">查看实验配置和运行状态，准备好后进入分析页查看建议和结论。</p>
               <p className="mt-3 font-mono text-xs text-slate-500">{experiment.id}</p>
             </div>
           </div>
-          <div className="flex flex-wrap gap-2 xl:max-w-[520px] xl:justify-end">
+          <div className="flex flex-wrap gap-2 lg:max-w-[460px] lg:justify-end">
             <button
               type="button"
-              onClick={handleEditStart}
+              onClick={() => handleEditStart()}
               className="btn-secondary flex items-center gap-2"
             >
               <PencilLine size={16} /> {hasConfigDraft ? '编辑草稿' : '编辑实验'}
@@ -1151,13 +1255,35 @@ export default function ExperimentDetail() {
             </Link>
           </div>
         </div>
+        <div className="mt-5 flex flex-col gap-3 border-t border-slate-200 pt-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="rounded-xl bg-blue-50 p-2 text-[var(--brand)]">
+              <Boxes size={18} />
+            </div>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-medium text-slate-500">所属应用空间</span>
+                <span className="text-sm font-semibold text-slate-900">{applicationName}</span>
+                {experiment.appId ? (
+                  <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 font-mono text-xs text-slate-500">
+                    {experiment.appId}
+                  </span>
+                ) : null}
+              </div>
+              <p className="mt-1 text-xs text-slate-500">实验通过应用空间关联事件字典、指标口径、负责人和审批规则。</p>
+            </div>
+          </div>
+          <Link to="/applications" className="btn-secondary shrink-0 text-sm">
+            查看应用空间
+          </Link>
+        </div>
       </section>
 
       {isEditing && editDraft ? (
         <section className="glass-card p-6">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
-              <p className="signal-label">Edit</p>
+              <p className="signal-label">配置编辑</p>
               <h2 className="section-title mt-2">编辑实验内容</h2>
               <p className="section-meta mt-2">可以修改实验基础信息、事件定义、指标定义和实验组配置，保存后进入配置草稿，不会立即覆盖运行时配置。</p>
               {hasConfigDraft ? (
@@ -1229,6 +1355,17 @@ export default function ExperimentDetail() {
 
             <div className="mt-5">
             <div className={activeEditPanel === 'basic' ? 'grid gap-4 md:grid-cols-2' : 'hidden'}>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 md:col-span-2">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-slate-900">应用空间：{applicationName}</p>
+                    <p className="mt-1 text-xs text-slate-500">{experiment.appId || '当前实验未设置应用空间'} · 应用归属创建后保持不变</p>
+                  </div>
+                  <Link to="/applications" className="text-sm font-medium text-[var(--brand)] hover:underline">
+                    查看关联配置
+                  </Link>
+                </div>
+              </div>
               <div>
                 <label className="mb-2 block text-sm text-slate-600">实验名称</label>
                 <input
@@ -1312,7 +1449,7 @@ export default function ExperimentDetail() {
                             value={eventDefinition.key || ''}
                             onChange={(event) => updateEventDefinition(index, 'key', event.target.value.toUpperCase())}
                             className="input"
-                            placeholder="例如：PAY_SUCCESS"
+                            placeholder="输入事件编码"
                           />
                         </div>
                         <div>
@@ -1408,7 +1545,7 @@ export default function ExperimentDetail() {
                             value={metricDefinition.key || ''}
                             onChange={(event) => updateMetricDefinition(index, 'key', event.target.value.toUpperCase())}
                             className="input"
-                            placeholder="例如：PAYMENT_RATE"
+                            placeholder="输入指标编码"
                           />
                         </div>
                         <div>
@@ -1555,12 +1692,12 @@ export default function ExperimentDetail() {
 
                       <div className="mt-4 grid gap-3 md:grid-cols-2">
                         <div>
-                          <label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">字段 key</label>
+                          <label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">字段标识</label>
                           <input
                             value={field.key || ''}
                             onChange={(event) => updateSchemaField(index, 'key', event.target.value)}
                             className="input"
-                            placeholder="例如：mainTitle"
+                            placeholder="输入字段标识"
                           />
                         </div>
                         <div>
@@ -1591,7 +1728,7 @@ export default function ExperimentDetail() {
                               value={formatConfigValue(field.defaultValue).replace(/^-$|^null$/g, '')}
                               onChange={(event) => updateSchemaField(index, 'defaultValue', event.target.value)}
                               className="textarea min-h-[110px]"
-                              placeholder={field.valueType === 'OBJECT' ? '{"style":"standard"}' : '["官方质检"]'}
+                              placeholder={field.valueType === 'OBJECT' ? '{"样式":"标准"}' : '["官方质检"]'}
                             />
                           ) : (
                             <input
@@ -1634,7 +1771,22 @@ export default function ExperimentDetail() {
 
             <div className={activeEditPanel === 'groups' ? 'grid gap-4 xl:grid-cols-[1.1fr_0.9fr]' : 'hidden'}>
               <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5">
-                <h3 className="font-semibold text-slate-900">实验组配置</h3>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="font-semibold text-slate-900">实验组配置</h3>
+                    <p className="mt-1 text-sm text-slate-500">新增或删除实验组时会自动重新均分流量。</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button onClick={addSchemaFieldFromGroups} className="btn-secondary flex items-center gap-2" type="button">
+                      <Plus size={16} />
+                      新增字段
+                    </button>
+                    <button onClick={addExperimentGroup} className="btn-primary flex items-center gap-2" type="button">
+                      <Plus size={16} />
+                      新增实验组
+                    </button>
+                  </div>
+                </div>
                 <div className="mt-4 max-h-[52vh] space-y-3 overflow-y-auto pr-1">
                   {editGroups.map((group, index) => {
                     const groupKey = getEditableGroupPanelKey(group, index)
@@ -1643,9 +1795,21 @@ export default function ExperimentDetail() {
 
                     return (
                       <div key={groupKey} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                        <div className="grid gap-3 md:grid-cols-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-semibold text-slate-900">实验组 {index + 1}</p>
+                          <button
+                            onClick={() => removeExperimentGroup(index)}
+                            className="rounded-xl border border-slate-200 bg-white p-2 text-slate-500 transition hover:text-[#b44f42] disabled:cursor-not-allowed disabled:opacity-40"
+                            type="button"
+                            disabled={editGroups.length <= 2}
+                            title={editGroups.length <= 2 ? '实验至少需要两个分组' : '删除实验组'}
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                        <div className="mt-3 grid gap-3 md:grid-cols-2">
                           <div>
-                            <label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">实验组 ID</label>
+                            <label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">实验组标识</label>
                             <input
                               value={group.id || ''}
                               onChange={(event) => updateGroupField(index, 'id', event.target.value)}
@@ -1655,7 +1819,7 @@ export default function ExperimentDetail() {
                           <div>
                             <label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">实验组名称</label>
                             <input
-                              value={group.name || ''}
+                              value={localizeSystemText(group.name || '')}
                               onChange={(event) => updateGroupField(index, 'name', event.target.value)}
                               className="input"
                             />
@@ -1683,8 +1847,8 @@ export default function ExperimentDetail() {
                           <div>
                             <p className="text-sm font-medium text-slate-900">字段配置</p>
                             <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-500">
-                              <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{summary.groupName}</span>
-                              <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{summary.groupId || '未设置 ID'}</span>
+                              <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{localizeSystemText(summary.groupName)}</span>
+                              <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{localizeSystemText(summary.groupId) || '未设置标识'}</span>
                               <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">流量 {summary.trafficPercent}</span>
                               <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{summary.configCount} 个配置项</span>
                             </div>
@@ -1700,7 +1864,7 @@ export default function ExperimentDetail() {
                                   <div className="mb-2 flex items-center justify-between gap-3">
                                     <div>
                                       <p className="text-sm font-medium text-slate-900">{field.label || field.key || '未命名字段'}</p>
-                                      <p className="text-xs text-slate-500">{field.key || '请先填写字段 key'} · {getOptionLabel(GROUP_CONFIG_VALUE_TYPE_OPTIONS, field.valueType, field.valueType)}</p>
+                                      <p className="text-xs text-slate-500">{field.key || '请先填写字段标识'} · {getValueTypeLabel(field.valueType)}</p>
                                     </div>
                                     {field.required ? (
                                       <span className="badge border border-[#ecd8bf] bg-[#fff8ef] text-[#9a6026]">必填</span>
@@ -1711,7 +1875,7 @@ export default function ExperimentDetail() {
                                       value={formatConfigValue(group.config?.[field.key] ?? field.defaultValue).replace(/^-$|^null$/g, '')}
                                       onChange={(event) => updateGroupConfigValue(index, field.key, event.target.value)}
                                       className="textarea min-h-[110px]"
-                                      placeholder={field.valueType === 'OBJECT' ? '{"theme":"standard"}' : '["标签1","标签2"]'}
+                                      placeholder={field.valueType === 'OBJECT' ? '{"主题":"标准"}' : '["标签1","标签2"]'}
                                       disabled={!field.key}
                                     />
                                   ) : field.valueType === 'BOOLEAN' ? (
@@ -1722,8 +1886,8 @@ export default function ExperimentDetail() {
                                       disabled={!field.key}
                                     >
                                       <option value="">未设置</option>
-                                      <option value="true">true</option>
-                                      <option value="false">false</option>
+                                      <option value="true">是</option>
+                                      <option value="false">否</option>
                                     </select>
                                   ) : (
                                     <input
@@ -1736,14 +1900,17 @@ export default function ExperimentDetail() {
                                     />
                                   )}
                                   {field.description ? (
-                                    <p className="mt-2 text-xs leading-6 text-slate-500">{field.description}</p>
+                                    <p className="mt-2 text-xs leading-6 text-slate-500">{localizeSystemText(field.description)}</p>
                                   ) : null}
                                 </div>
                               ))}
                             </div>
                           ) : (
-                            <div className="mt-4 rounded-xl bg-white px-4 py-3 text-sm text-slate-500">
-                              当前没有定义独立配置字段，可直接在实验返回结果中查看自由结构配置。
+                            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-white px-4 py-3 text-sm text-slate-500">
+                              <span>当前没有配置字段，新增字段后可为各实验组填写不同的页面参数。</span>
+                              <button type="button" onClick={addSchemaFieldFromGroups} className="font-medium text-[var(--brand)] hover:underline">
+                                新增字段并配置
+                              </button>
                             </div>
                           )
                         ) : null}
@@ -1763,11 +1930,9 @@ export default function ExperimentDetail() {
                       onChange={(event) => updateTrafficField('strategy', event.target.value)}
                       className="input"
                     >
-                      <option value="HASH">HASH</option>
-                      <option value="RANDOM">RANDOM</option>
-                      <option value="RULE">RULE</option>
-                      <option value="THOMPSON_SAMPLING">THOMPSON_SAMPLING</option>
-                      <option value="UCB">UCB</option>
+                      {TRAFFIC_STRATEGY_OPTIONS.map(option => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
                     </select>
                   </div>
 
@@ -1787,9 +1952,11 @@ export default function ExperimentDetail() {
                   <div className="rounded-xl bg-slate-50 px-4 py-3">
                     <p className="text-slate-500">分配明细</p>
                     <div className="mt-2 space-y-2">
-                      {(editDraft.traffic?.allocation || buildTrafficAllocation(editGroups)).map(item => (
+                      {(editDraft.traffic?.allocation || buildExperimentGroupTrafficAllocation(editGroups)).map(item => (
                         <div key={item.group} className="flex items-center justify-between text-sm">
-                          <span>{item.group}</span>
+                          <span>{localizeSystemText(
+                            editGroups.find(group => group.id === item.group)?.name || item.group
+                          )}</span>
                           <span>{Math.round((item.ratio || 0) * 100)}%</span>
                         </div>
                       ))}
@@ -1824,6 +1991,17 @@ export default function ExperimentDetail() {
           ))}
         </div>
       </nav>
+
+      {activeDetailPanel === 'effect' ? (
+        <ExperimentEffectPreview
+          experimentId={experiment.id}
+          applicationName={applicationName}
+          appId={experiment.appId}
+          configVersion={experiment.configVersion}
+          groups={experimentGroups}
+          schema={groupConfigSchema}
+        />
+      ) : null}
 
       {activeDetailPanel === 'data' ? (
       <DataPipelineStatus
@@ -1895,7 +2073,7 @@ export default function ExperimentDetail() {
               <div>
                 <p className="text-sm font-semibold text-slate-900">待发布草稿</p>
                 <p className="mt-1 text-sm text-slate-500">
-                  草稿不会影响 SDK 和在线分流，发布后才会成为新的运行时配置。
+                  草稿不会影响客户端组件和在线分流，发布后才会成为新的运行时配置。
                 </p>
               </div>
               {hasConfigDraft ? (
@@ -2234,7 +2412,7 @@ export default function ExperimentDetail() {
               <tbody className="divide-y divide-slate-100">
                 {auditLogs.map((auditLog, index) => {
                   const actionConfig = auditActionConfig[auditLog.action] || {
-                    label: auditLog.action || '-',
+                    label: auditLog.action ? '其他操作' : '-',
                     className: 'border-slate-200 bg-slate-50 text-slate-600'
                   }
                   const auditLogKey = auditLog.auditId || [
@@ -2261,7 +2439,7 @@ export default function ExperimentDetail() {
                         {formatAuditStatusChange(auditLog)}
                       </td>
                       <td className="px-4 py-3 text-slate-600">
-                        {auditLog.summary || '-'}
+                        {localizeSystemText(auditLog.summary) || '-'}
                       </td>
                       <td className="px-4 py-3 text-slate-600">
                         {auditLog.detail?.configVersion ?? '-'}
@@ -2324,21 +2502,31 @@ export default function ExperimentDetail() {
             {experiment.description ? (
               <div className="mt-4 border-t border-slate-200 pt-4">
                 <p className="mb-2 text-slate-500">实验描述</p>
-                <p className="leading-6 text-slate-700">{experiment.description}</p>
+                <p className="leading-6 text-slate-700">{localizeSystemText(experiment.description)}</p>
               </div>
             ) : null}
           </div>
         </div>
 
         <div className="glass-card p-6">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="rounded-xl bg-blue-50 p-2 text-[var(--brand)]">
-              <Layers size={20} />
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="rounded-xl bg-blue-50 p-2 text-[var(--brand)]">
+                <Layers size={20} />
+              </div>
+              <span className="text-slate-500">实验组</span>
             </div>
-            <span className="text-slate-500">实验组</span>
+            <button
+              type="button"
+              onClick={() => handleEditStart('groups')}
+              className="rounded-xl border border-slate-200 bg-white p-2 text-slate-500 transition-colors hover:border-blue-200 hover:text-[var(--brand)]"
+              title="编辑实验组"
+            >
+              <PencilLine size={16} />
+            </button>
           </div>
           <div className="space-y-3">
-            {Object.entries(experimentGroups).map(([groupId, group]) => {
+            {getOrderedGroupEntries(experimentGroups).map(([groupId, group]) => {
               const configEntries = buildGroupConfigEntries(group.config, groupConfigSchema)
               const isExpanded = expandedGroupId === groupId
 
@@ -2351,11 +2539,11 @@ export default function ExperimentDetail() {
                         onClick={() => setExpandedGroupId(current => current === groupId ? null : groupId)}
                         className="flex items-center gap-2 text-left text-sm font-medium text-slate-900 transition-colors hover:text-[var(--brand)]"
                       >
-                        <span>{group.name || groupId}</span>
+                        <span>{localizeSystemText(group.name || groupId)}</span>
                         {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
                       </button>
                       <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-500">
-                        <span className="rounded-full border border-slate-200 bg-white px-2 py-1">{groupId}</span>
+                        <span className="rounded-full border border-slate-200 bg-white px-2 py-1">{localizeSystemText(groupId)}</span>
                         <span className="rounded-full border border-slate-200 bg-white px-2 py-1">
                           流量 {((group.trafficRatio || 0) * 100).toFixed(0)}%
                         </span>
@@ -2374,7 +2562,7 @@ export default function ExperimentDetail() {
                             <div className="flex items-start justify-between gap-3">
                               <div>
                                 <p className="text-slate-700 font-medium">{entry.label}</p>
-                                <p className="mt-1 text-slate-500">{entry.key} · {entry.valueType}</p>
+                                <p className="mt-1 text-slate-500">{entry.key} · {getValueTypeLabel(entry.valueType)}</p>
                               </div>
                               {entry.required && (
                                 <span className="rounded-full border border-[#ecd8bf] bg-[#fff8ef] px-2 py-0.5 text-[11px] text-[#9a6026]">
@@ -2383,7 +2571,7 @@ export default function ExperimentDetail() {
                               )}
                             </div>
                             {entry.description && (
-                              <p className="mt-2 text-slate-500 leading-5">{entry.description}</p>
+                              <p className="mt-2 text-slate-500 leading-5">{localizeSystemText(entry.description)}</p>
                             )}
                             <pre className="mt-2 whitespace-pre-wrap break-words rounded-xl bg-slate-50 px-3 py-2 font-sans text-slate-700">
                               {formatConfigValue(entry.value)}
@@ -2411,7 +2599,7 @@ export default function ExperimentDetail() {
           <div className="space-y-2 text-sm">
             <div className="flex justify-between">
               <span className="text-slate-500">分配策略</span>
-              <span className="text-slate-900">{experiment.traffic?.strategy || 'HASH'}</span>
+              <span className="text-slate-900">{getTrafficStrategyLabel(experiment.traffic?.strategy || 'HASH')}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-slate-500">总流量</span>
@@ -2422,11 +2610,21 @@ export default function ExperimentDetail() {
       </div>
 
       <div className={activeRuntimePanel === 'schema' ? 'glass-card p-6' : 'hidden'}>
-        <div className="flex items-center gap-3 mb-4">
-          <div className="rounded-xl bg-blue-50 p-2 text-[var(--brand)]">
-            <Settings size={20} />
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="rounded-xl bg-blue-50 p-2 text-[var(--brand)]">
+              <Settings size={20} />
+            </div>
+            <span className="text-slate-500">配置字段定义</span>
           </div>
-          <span className="text-slate-500">配置字段定义</span>
+          <button
+            type="button"
+            onClick={() => handleEditStart('schema')}
+            className="rounded-xl border border-slate-200 bg-white p-2 text-slate-500 transition-colors hover:border-blue-200 hover:text-[var(--brand)]"
+            title="编辑配置字段"
+          >
+            <PencilLine size={16} />
+          </button>
         </div>
         {groupConfigSchema.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm leading-7 text-slate-500">
@@ -2439,7 +2637,7 @@ export default function ExperimentDetail() {
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="text-slate-900 font-medium">{getSchemaFieldLabel(field)}</p>
-                    <p className="mt-1 text-sm text-slate-500">{field.key} · {field.valueType}</p>
+                    <p className="mt-1 text-sm text-slate-500">{field.key} · {getValueTypeLabel(field.valueType)}</p>
                   </div>
                   {field.required && (
                     <span className="rounded-full border border-[#ecd8bf] bg-[#fff8ef] px-2 py-0.5 text-xs text-[#9a6026]">
@@ -2448,7 +2646,7 @@ export default function ExperimentDetail() {
                   )}
                 </div>
                 {field.description && (
-                  <p className="mt-3 text-sm leading-6 text-slate-600">{field.description}</p>
+                  <p className="mt-3 text-sm leading-6 text-slate-600">{localizeSystemText(field.description)}</p>
                 )}
                 {field.defaultValue !== null && field.defaultValue !== undefined && field.defaultValue !== '' && (
                   <div className="mt-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600">
@@ -2483,7 +2681,7 @@ export default function ExperimentDetail() {
                       <p className="font-medium text-slate-900">{getDefinitionLabel(definition)}</p>
                       <p className="mt-1 text-sm text-slate-500">
                         {definition.key}
-                        {definition.category ? ` · ${getOptionLabel(EVENT_CATEGORY_OPTIONS, definition.category, definition.category)}` : ''}
+                        {definition.category ? ` · ${getEventCategoryLabel(definition.category)}` : ''}
                       </p>
                     </div>
                     {definition.primary ? (
@@ -2493,7 +2691,7 @@ export default function ExperimentDetail() {
                     ) : null}
                   </div>
                   {definition.description ? (
-                    <p className="mt-3 text-sm leading-6 text-slate-600">{definition.description}</p>
+                    <p className="mt-3 text-sm leading-6 text-slate-600">{localizeSystemText(definition.description)}</p>
                   ) : null}
                 </div>
               ))}
@@ -2520,7 +2718,7 @@ export default function ExperimentDetail() {
                     <div>
                       <p className="font-medium text-slate-900">{getDefinitionLabel(definition)}</p>
                       <p className="mt-1 text-sm text-slate-500">
-                        {definition.key} · {getOptionLabel(METRIC_AGGREGATION_TYPE_OPTIONS, definition.aggregationType, definition.aggregationType)}
+                        {definition.key} · {getMetricAggregationLabel(definition.aggregationType)}
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -2538,11 +2736,11 @@ export default function ExperimentDetail() {
                   </div>
                   <div className="mt-3 text-sm leading-6 text-slate-600">
                     <p>分子事件：{definition.numeratorEventType || '-'}</p>
-                    <p>分母类型：{getOptionLabel(METRIC_DENOMINATOR_TYPE_OPTIONS, definition.denominatorType, definition.denominatorType || '-')}</p>
+                    <p>分母类型：{getMetricDenominatorLabel(definition.denominatorType)}</p>
                     {definition.denominatorType === 'EVENT_COUNT' ? (
                       <p>分母事件：{definition.denominatorEventType || '-'}</p>
                     ) : null}
-                    {definition.description ? <p className="mt-2">{definition.description}</p> : null}
+                    {definition.description ? <p className="mt-2">{localizeSystemText(definition.description)}</p> : null}
                   </div>
                 </div>
               ))}
@@ -2560,14 +2758,14 @@ export default function ExperimentDetail() {
             <div className="flex items-center gap-3">
               <h2 className="text-lg font-semibold text-slate-900">结论状态</h2>
               <span className={`badge border ${conclusionStatusConfig[currentConclusionStatus]?.className || conclusionStatusConfig.NOT_READY.className}`}>
-                {conclusionStatusConfig[currentConclusionStatus]?.label || currentConclusionStatus}
+                {getConclusionStatusLabel(currentConclusionStatus)}
               </span>
             </div>
             <div className="grid grid-cols-1 gap-4 text-sm md:grid-cols-2 xl:grid-cols-4">
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 <p className="text-slate-500 mb-1">当前人工状态</p>
                 <p className="text-slate-900 font-medium">
-                  {conclusionStatusConfig[currentConclusionStatus]?.label || currentConclusionStatus}
+                  {getConclusionStatusLabel(currentConclusionStatus)}
                 </p>
                 <p className="text-slate-400 text-xs mt-1">
                   {experiment.conclusionUpdatedAt ? new Date(experiment.conclusionUpdatedAt).toLocaleString() : '暂无更新时间'}
@@ -2577,7 +2775,7 @@ export default function ExperimentDetail() {
                 <p className="text-slate-500 mb-1">系统建议状态</p>
                 <p className="text-slate-900 font-medium">
                   {suggestedConclusionStatus !== '-' 
-                    ? (conclusionStatusConfig[suggestedConclusionStatus]?.label || suggestedConclusionStatus)
+                    ? getConclusionStatusLabel(suggestedConclusionStatus)
                     : '-'}
                 </p>
                 <p className="text-slate-400 text-xs mt-1">
@@ -2666,13 +2864,11 @@ export default function ExperimentDetail() {
                   <div>
                     <p className="text-slate-400">报告建议</p>
                     <p className="mt-1 font-medium text-slate-900">
-                      {conclusionStatusConfig[latestReportSnapshot.conclusionStatus]?.label
-                        || latestReportSnapshot.conclusionStatus
-                        || '-'}
+                      {getConclusionStatusLabel(latestReportSnapshot.conclusionStatus)}
                     </p>
                   </div>
                   <div>
-                    <p className="text-slate-400">SRM</p>
+                    <p className="text-slate-400">样本比例异常</p>
                     <p className="mt-1 font-medium text-slate-900">
                       {latestReportSnapshot.hasSrm ? '已发现' : '未发现'}
                     </p>
@@ -2714,7 +2910,7 @@ export default function ExperimentDetail() {
               ) : (
                 allowedConclusionStatuses.map(statusKey => (
                   <option key={statusKey} value={statusKey}>
-                    {conclusionStatusConfig[statusKey]?.label || statusKey}
+                    {getConclusionStatusLabel(statusKey)}
                   </option>
                 ))
               )}
@@ -2882,7 +3078,7 @@ export default function ExperimentDetail() {
                 return (
                   <div key={groupId} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                     <div className="mb-3 flex items-center justify-between">
-                      <span className="font-medium text-slate-900">{stats.groupName || groupId}</span>
+                      <span className="font-medium text-slate-900">{localizeSystemText(stats.groupName || groupId)}</span>
                       {stats.isBaseline && (
                         <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-xs text-slate-600">基准组</span>
                       )}
@@ -2947,7 +3143,7 @@ export default function ExperimentDetail() {
             </div>
             {mabSummary.recommendation && (
               <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4">
-                <p className="text-[var(--brand)]">{mabSummary.recommendation}</p>
+                <p className="text-[var(--brand)]">{localizeSystemText(mabSummary.recommendation)}</p>
               </div>
             )}
             {mabGroupRows.length > 0 ? (
@@ -2956,7 +3152,7 @@ export default function ExperimentDetail() {
                   <div key={row.groupId} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <p className="font-medium text-slate-900">{row.groupName}</p>
+                        <p className="font-medium text-slate-900">{localizeSystemText(row.groupName)}</p>
                       </div>
                       <span className="rounded-full border border-blue-200 bg-white px-2 py-1 text-xs text-[var(--brand)]">
                         {(row.allocationProbability * 100).toFixed(1)}%
@@ -2980,7 +3176,7 @@ export default function ExperimentDetail() {
         ) : (
           <div className="glass-card p-8 text-center">
             <BarChart3 size={40} className="mx-auto mb-4 text-[var(--brand)]/70" />
-            <p className="mb-2 font-medium text-slate-900">还没有 MAB 状态</p>
+            <p className="mb-2 font-medium text-slate-900">还没有动态分流状态</p>
             <p className="text-sm text-slate-500">当前实验还没有返回多臂老虎机算法摘要。</p>
           </div>
         )

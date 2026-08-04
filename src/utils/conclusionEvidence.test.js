@@ -55,7 +55,7 @@ test('getConclusionEvidenceBlocker blocks missing or unsafe graduation evidence'
         breachedGuardrails: []
       }
     }),
-    '最新报告快照存在 SRM 风险，不能确认毕业。'
+    '最新报告快照存在样本比例异常风险，不能确认毕业。'
   )
 
   assert.equal(

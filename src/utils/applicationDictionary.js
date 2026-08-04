@@ -48,6 +48,91 @@ const metricReferencesKnownEvents = (metricDefinition, eventKeys) => {
   return Boolean(denominatorEventType && eventKeys.has(denominatorEventType))
 }
 
+const normalizeEventDefinition = (definition = {}) => ({
+  key: normalizeKey(definition.key),
+  label: normalizeText(definition.label),
+  description: normalizeText(definition.description),
+  category: normalizeEventCategory(definition.category),
+  primary: Boolean(definition.primary),
+})
+
+const normalizeMetricDefinition = (definition = {}) => ({
+  key: normalizeKey(definition.key),
+  name: normalizeText(definition.name),
+  description: normalizeText(definition.description),
+  aggregationType: normalizeAggregationType(definition.aggregationType),
+  numeratorEventType: normalizeKey(definition.numeratorEventType),
+  denominatorType: normalizeDenominatorType(definition.denominatorType),
+  denominatorEventType: normalizeKey(definition.denominatorEventType),
+  primaryMetric: Boolean(definition.primaryMetric),
+  guardrailMetric: Boolean(definition.guardrailMetric),
+})
+
+export const getMetricReferencedEventKeys = (metricDefinition = {}) => {
+  const eventKeys = [normalizeKey(metricDefinition.numeratorEventType)].filter(Boolean)
+  if (normalizeAggregationType(metricDefinition.aggregationType) === 'RATE'
+    && normalizeDenominatorType(metricDefinition.denominatorType) === 'EVENT_COUNT') {
+    const denominatorEventType = normalizeKey(metricDefinition.denominatorEventType)
+    if (denominatorEventType) {
+      eventKeys.push(denominatorEventType)
+    }
+  }
+  return [...new Set(eventKeys)]
+}
+
+export const selectApplicationDictionaryDefinitions = (
+  draft = {},
+  dictionary = {},
+  { eventKeys = [], metricKeys = [], primaryMetricKey = '' } = {}
+) => {
+  const dictionaryEvents = (dictionary.eventDefinitions || [])
+    .map(normalizeEventDefinition)
+    .filter(definition => definition.key)
+  const dictionaryEventKeys = buildEventKeySet(dictionaryEvents)
+  const dictionaryMetrics = (dictionary.metricDefinitions || [])
+    .map(normalizeMetricDefinition)
+    .filter(definition => definition.key && metricReferencesKnownEvents(definition, dictionaryEventKeys))
+  const requestedEventKeys = new Set(eventKeys.map(normalizeKey).filter(Boolean))
+  const requestedMetricKeys = new Set(metricKeys.map(normalizeKey).filter(Boolean))
+  const existingMetrics = new Map((draft.metricDefinitions || [])
+    .map(definition => [normalizeKey(definition?.key), definition]))
+  const selectedMetrics = dictionaryMetrics
+    .filter(definition => requestedMetricKeys.has(definition.key))
+
+  selectedMetrics.forEach((definition) => {
+    getMetricReferencedEventKeys(definition).forEach(key => requestedEventKeys.add(key))
+  })
+
+  const selectedEvents = dictionaryEvents
+    .filter(definition => requestedEventKeys.has(definition.key))
+    .map(definition => ({ ...definition }))
+  const requestedPrimaryMetricKey = normalizeKey(primaryMetricKey)
+  const currentPrimaryMetricKey = normalizeKey((draft.metricDefinitions || [])
+    .find(definition => definition?.primaryMetric)?.key)
+  const selectedMetricKeySet = buildMetricKeySet(selectedMetrics)
+  const resolvedPrimaryMetricKey = [requestedPrimaryMetricKey, currentPrimaryMetricKey]
+    .find(key => key && selectedMetricKeySet.has(key))
+    || selectedMetrics.find(definition => definition.primaryMetric)?.key
+    || selectedMetrics[0]?.key
+    || ''
+
+  return {
+    ...draft,
+    eventDefinitions: selectedEvents,
+    metricDefinitions: selectedMetrics.map((definition) => {
+      const existing = existingMetrics.get(definition.key)
+      const isPrimaryMetric = definition.key === resolvedPrimaryMetricKey
+      return {
+        ...definition,
+        primaryMetric: isPrimaryMetric,
+        guardrailMetric: isPrimaryMetric
+          ? false
+          : Boolean(existing?.guardrailMetric ?? definition.guardrailMetric),
+      }
+    }),
+  }
+}
+
 export const mergeApplicationDictionaryIntoDraft = (draft = {}, dictionary = {}) => {
   const eventDefinitions = (draft.eventDefinitions || []).map(definition => ({ ...definition }))
   const metricDefinitions = (draft.metricDefinitions || []).map(definition => ({ ...definition }))

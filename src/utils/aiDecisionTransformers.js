@@ -1,3 +1,5 @@
+import { getOrderedGroupEntries } from './editableGroupUtils.js'
+
 const DEFAULT_STRATEGY = 'HASH'
 const DEFAULT_TOTAL_TRAFFIC = 1
 export const GROUP_CONFIG_VALUE_TYPES = ['STRING', 'INTEGER', 'BOOLEAN', 'OBJECT', 'JSON']
@@ -10,7 +12,7 @@ export const GROUP_CONFIG_VALUE_TYPE_OPTIONS = [
   { value: 'INTEGER', label: '整数' },
   { value: 'BOOLEAN', label: '布尔值' },
   { value: 'OBJECT', label: '对象' },
-  { value: 'JSON', label: 'JSON' }
+  { value: 'JSON', label: '结构化数据' }
 ]
 export const EVENT_CATEGORY_OPTIONS = [
   { value: 'FUNNEL', label: '漏斗事件' },
@@ -32,7 +34,7 @@ export const METRIC_DENOMINATOR_TYPE_OPTIONS = [
 const DEFAULT_GROUP_RATIO = 0.5
 const DEFAULT_GROUPS = [
   { id: 'control', name: '对照组', trafficRatio: DEFAULT_GROUP_RATIO, config: {} },
-  { id: 'variant_a', name: '实验组A', trafficRatio: DEFAULT_GROUP_RATIO, config: {} }
+  { id: 'variant_a', name: '实验组一', trafficRatio: DEFAULT_GROUP_RATIO, config: {} }
 ]
 const CONFIDENCE_LEVEL_MAP = {
   HIGH: 0.9,
@@ -261,7 +263,7 @@ export const buildExperimentDraftFromResponse = (experiment) => {
     return buildDefaultExperimentCreatePayload()
   }
 
-  const groups = Object.entries(experiment.groups || {}).map(([groupId, group]) => ({
+  const groups = getOrderedGroupEntries(experiment.groups || {}).map(([groupId, group]) => ({
     id: group?.id || groupId,
     name: group?.name || groupId,
     trafficRatio: normalizeNumber(group?.trafficRatio, DEFAULT_GROUP_RATIO),
@@ -269,6 +271,7 @@ export const buildExperimentDraftFromResponse = (experiment) => {
   }))
 
   return {
+    appId: normalizeText(experiment.appId),
     name: normalizeText(experiment.name),
     description: normalizeText(experiment.description),
     layerId: normalizeText(experiment.layerId),
@@ -281,7 +284,7 @@ export const buildExperimentDraftFromResponse = (experiment) => {
     traffic: {
       strategy: experiment.traffic?.strategy || DEFAULT_STRATEGY,
       totalTraffic: experiment.traffic?.totalTraffic ?? DEFAULT_TOTAL_TRAFFIC,
-      allocation: experiment.traffic?.allocation || buildTrafficAllocation(groups)
+      allocation: buildTrafficAllocation(groups)
     }
   }
 }
@@ -316,7 +319,7 @@ export const buildDecisionWorkspaceModel = ({ statistics, diagnosis, graduation 
   const blockingIssues = quality.blockingIssues || []
   const breachedGuardrails = summary.breachedGuardrails || []
   const fallbackSummary = quality.analysisReady
-    ? '基础统计已就绪，等待 AI 决策结论。'
+    ? '基础统计已就绪，等待智能决策结论。'
     : '分析尚未就绪，继续运行并累计样本。'
   const fallbackGuardrailStatus = blockingIssues.length > 0 || breachedGuardrails.length > 0
     ? 'BLOCKED'
@@ -383,15 +386,30 @@ export const buildExperimentCreatePayload = ({ experimentDraft }) => {
       ...traffic,
       strategy: traffic.strategy || DEFAULT_STRATEGY,
       totalTraffic: traffic.totalTraffic ?? 1,
-      allocation: traffic.allocation || buildTrafficAllocation(groups)
+      allocation: buildTrafficAllocation(groups)
     }
   }
 }
 
 export const buildVariantCandidatePayload = ({
   variantType,
+  appId,
+  applicationName,
+  businessScenario,
+  placement,
   goal,
   audience,
+  baseline,
+  hypothesis,
+  primaryMetricKey,
+  primaryMetric,
+  guardrailMetrics,
+  expectedLift,
+  startTime,
+  endTime,
+  sellingPointsText,
+  tone,
+  riskGuardrail,
   count,
   constraintsText,
   sourceContextText,
@@ -411,6 +429,29 @@ export const buildVariantCandidatePayload = ({
   }
 
   const sourceContext = {}
+  const contextFields = {
+    appId,
+    applicationName,
+    businessScenario,
+    placement,
+    baseline,
+    hypothesis,
+    primaryMetricKey,
+    primaryMetric,
+    guardrailMetrics,
+    expectedLift,
+    startTime,
+    endTime,
+    sellingPoints: sellingPointsText,
+    tone,
+    riskGuardrail
+  }
+  Object.entries(contextFields).forEach(([key, value]) => {
+    const normalizedValue = String(value || '').trim()
+    if (normalizedValue) {
+      sourceContext[key] = normalizedValue
+    }
+  })
   const brief = String(sourceContextText || '').trim()
   if (brief) {
     sourceContext.brief = brief
@@ -503,3 +544,60 @@ export const normalizeVariantCandidates = (result, variantType = 'TEXT') => {
     })
     .filter(candidate => candidate.text || candidate.imageUrl)
 }
+
+const VARIANT_PLAN_FIELD_MAP = {
+  '方案名称': 'name',
+  '策略方向': 'strategy',
+  '候选内容': 'content',
+  '实验假设': 'hypothesis',
+  '实施建议': 'implementation',
+  '风险提醒': 'risk'
+}
+
+const parseVariantPlanText = (text) => {
+  const normalizedText = normalizeText(text).replace(/^\d+[.\u3001)\uff09]\s*/, '')
+  const parsed = {}
+  normalizedText.split(/[\uff5c|]/).forEach((segment) => {
+    const match = segment.trim().match(/^([^:：]+)[:：]\s*(.+)$/)
+    if (!match) {
+      return
+    }
+    const field = VARIANT_PLAN_FIELD_MAP[match[1].replace(/[*_]/g, '').trim()]
+    if (field) {
+      parsed[field] = match[2].replace(/[*_]/g, '').trim()
+    }
+  })
+  return parsed
+}
+
+export const normalizeVariantPlans = (result, variantType = 'TEXT', context = {}) => (
+  normalizeVariantCandidates(result, variantType).map((candidate, index) => {
+    const parsed = variantType === 'TEXT' ? parseVariantPlanText(candidate.text) : {}
+    const placement = normalizeText(context.placement)
+    const audience = normalizeText(context.audience)
+    const primaryMetric = normalizeText(context.primaryMetric)
+    const expectedLift = normalizeText(context.expectedLift)
+    const fallbackStrategy = normalizeText(context.sellingPointsText)
+      || (audience ? `围绕${audience}的核心需求调整表达` : '强化核心价值表达')
+    const fallbackImplementation = placement
+      ? `在${placement}投放，保持其他变量不变`
+      : '仅替换实验组候选内容，保持其他变量不变'
+    const fallbackRisk = normalizeText(context.riskGuardrail)
+      || String(context.constraintsText || '').split('\n').map(item => item.trim()).filter(Boolean)[0]
+      || '关注品牌信任和负向反馈'
+
+    return {
+      ...candidate,
+      name: parsed.name || `方案 ${index + 1}`,
+      strategy: parsed.strategy || fallbackStrategy,
+      content: parsed.content || candidate.text,
+      hypothesis: parsed.hypothesis || normalizeText(context.hypothesis) || '优化表达后可提升目标用户的决策效率',
+      implementation: parsed.implementation || fallbackImplementation,
+      risk: parsed.risk || fallbackRisk,
+      primaryMetric: primaryMetric || '待确定',
+      expectedLift: expectedLift || '待确定',
+      audience: audience || '全部目标用户',
+      rawText: candidate.text
+    }
+  })
+)

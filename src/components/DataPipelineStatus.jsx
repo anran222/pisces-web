@@ -25,6 +25,7 @@ import {
   getReplayModeLabel,
   getReplayPlanModeLabel
 } from '../utils/eventReplayPlan'
+import { localizeSystemText } from '../utils/uiLabels'
 
 const stageIconMap = {
   assignment: GitBranch,
@@ -122,7 +123,7 @@ export default function DataPipelineStatus({
   const eventPipelineStatusConfig = statusConfig[pipeline.eventPipeline.uiStatus] || statusConfig.unavailable
   const latestReplayJob = Array.isArray(eventReplayJobs) ? eventReplayJobs[0] : null
   const latestReplayStatus = replayJobStatusConfig[latestReplayJob?.jobStatus]
-    || { label: latestReplayJob?.jobStatus || '未知', uiStatus: 'unavailable' }
+    || { label: latestReplayJob?.jobStatus ? '未知任务状态' : '未知', uiStatus: 'unavailable' }
   const latestReplayStatusConfig = statusConfig[latestReplayStatus.uiStatus] || statusConfig.unavailable
   const latestReplayModeLabel = getReplayModeLabel(latestReplayJob)
   const latestReplayFactScopeLabel = getReplayFactScopeLabel(latestReplayJob)
@@ -263,8 +264,8 @@ export default function DataPipelineStatus({
             <div>
               <p className="text-sm font-semibold text-slate-900">事件收件箱</p>
               <p className="mt-1 text-xs text-slate-500">
-                状态 {pipeline.eventPipeline.status}
-                {eventPipelineError ? ` · ${eventPipelineError}` : ''}
+                状态 {pipeline.eventPipeline.label}
+                {eventPipelineError ? ` · ${localizeSystemText(eventPipelineError)}` : ''}
               </p>
             </div>
           </div>
@@ -399,7 +400,7 @@ export default function DataPipelineStatus({
                 </p>
               </div>
               <div>
-                <p className="text-xs text-slate-500">MAB 奖励</p>
+                <p className="text-xs text-slate-500">动态分流奖励</p>
                 <p className="mt-1 text-sm font-semibold text-slate-900">
                   {formatCount(latestReplayJob.mabRewardCount)}
                 </p>
@@ -436,7 +437,7 @@ export default function DataPipelineStatus({
             ) : null}
             {latestReplayJob.errorMessage ? (
               <p className="mt-3 rounded-lg border border-[#e7c8c4] bg-[#fff7f5] px-3 py-2 text-xs leading-5 text-[#8f3c31]">
-                {latestReplayJob.errorMessage}
+                  {localizeSystemText(latestReplayJob.errorMessage)}
               </p>
             ) : null}
           </div>
@@ -498,7 +499,7 @@ export default function DataPipelineStatus({
                 事件类型
                 <input
                   className="input mt-2 h-10 px-3 py-2 text-sm"
-                  placeholder="PAY_SUCCESS, PRODUCT_VIEW"
+                  placeholder="输入事件标识，使用逗号分隔"
                   value={replayPlanDraft.eventTypesText}
                   onChange={event => updateReplayPlanDraft('eventTypesText', event.target.value)}
                 />
@@ -535,7 +536,7 @@ export default function DataPipelineStatus({
             </div>
             {eventReplayPlanError ? (
               <p className="mt-3 rounded-lg border border-[#e7c8c4] bg-[#fff7f5] px-3 py-2 text-xs leading-5 text-[#8f3c31]">
-                {eventReplayPlanError}
+                {localizeSystemText(eventReplayPlanError)}
               </p>
             ) : null}
             {eventReplayPlan ? (
@@ -543,7 +544,7 @@ export default function DataPipelineStatus({
                 <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                   <div>
                     <p className="text-sm font-semibold text-slate-900">计划结果</p>
-                    <p className="mt-1 text-xs text-slate-500">{eventReplayPlan.message || '-'}</p>
+                    <p className="mt-1 text-xs text-slate-500">{localizeSystemText(eventReplayPlan.message) || '-'}</p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <span className={`w-fit rounded-full border px-2 py-1 text-xs font-semibold ${replayPlanStatusConfig.className}`}>
@@ -669,7 +670,7 @@ export default function DataPipelineStatus({
                   </div>
                 ) : eventReplayPlan.requestedSegmentCount > 1 ? (
                   <p className="mt-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs leading-5 text-slate-500">
-                    {eventReplayPlan.segmentRecoveryMessage || '当前计划未生成可恢复分段。'}
+                    {localizeSystemText(eventReplayPlan.segmentRecoveryMessage) || '当前计划未生成可恢复分段。'}
                   </p>
                 ) : null}
                 {replayPlanGroupRows.length > 0 ? (
@@ -689,7 +690,7 @@ export default function DataPipelineStatus({
                         {replayPlanGroupRows.map(group => (
                           <tr key={group.groupId}>
                             <td className="px-3 py-2">
-                              <p className="font-semibold text-slate-900">{group.groupName}</p>
+                              <p className="font-semibold text-slate-900">{localizeSystemText(group.groupName)}</p>
                               <p className="mt-1 font-mono text-[11px] text-slate-500">{group.groupId}</p>
                             </td>
                             <td className="px-3 py-2 font-semibold text-slate-900">{formatCount(group.eventCount)}</td>
@@ -720,10 +721,10 @@ export default function DataPipelineStatus({
             <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
               <tr>
                 <th className="px-4 py-3">实验组</th>
-                <th className="px-4 py-3">Assignment</th>
-                <th className="px-4 py-3">Exposure</th>
-                <th className="px-4 py-3">Event</th>
-                <th className="px-4 py-3">Visitor</th>
+                <th className="px-4 py-3">分流</th>
+                <th className="px-4 py-3">曝光</th>
+                <th className="px-4 py-3">事件</th>
+                <th className="px-4 py-3">访客</th>
                 <th className="px-4 py-3">状态</th>
               </tr>
             </thead>
@@ -739,7 +740,7 @@ export default function DataPipelineStatus({
                   return (
                     <tr key={group.groupId}>
                       <td className="px-4 py-3">
-                        <p className="font-semibold text-slate-900">{group.groupName}</p>
+                        <p className="font-semibold text-slate-900">{localizeSystemText(group.groupName)}</p>
                         <p className="mt-1 font-mono text-xs text-slate-500">{group.groupId}</p>
                       </td>
                       <td className="px-4 py-3 font-semibold text-slate-900">{formatCount(group.assignments)}</td>
@@ -760,7 +761,7 @@ export default function DataPipelineStatus({
         </div>
         ) : (
         <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm leading-7 text-slate-500">
-          {statsError || '当前统计接口暂未返回数据。'}
+          {localizeSystemText(statsError) || '当前统计接口暂未返回数据。'}
         </div>
         )
       ) : null}
@@ -776,7 +777,7 @@ export default function DataPipelineStatus({
               </div>
               <div className="space-y-2">
                 {pipeline.blockingIssues.map(issue => (
-                  <p key={issue} className="text-sm leading-6 text-[#8f3c31]">{issue}</p>
+                  <p key={issue} className="text-sm leading-6 text-[#8f3c31]">{localizeSystemText(issue)}</p>
                 ))}
               </div>
             </div>
@@ -789,7 +790,7 @@ export default function DataPipelineStatus({
               </div>
               <div className="space-y-2">
                 {pipeline.warnings.map(warning => (
-                  <p key={warning} className="text-sm leading-6 text-[#805226]">{warning}</p>
+                  <p key={warning} className="text-sm leading-6 text-[#805226]">{localizeSystemText(warning)}</p>
                 ))}
               </div>
             </div>

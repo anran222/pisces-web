@@ -56,12 +56,12 @@ const buildCountStage = ({ key, label, count, emptyStatus }) => ({
 const formatPendingSeconds = (seconds) => {
   const normalizedSeconds = normalizeCount(seconds)
   if (normalizedSeconds < 60) {
-    return `${normalizedSeconds}s`
+    return `${normalizedSeconds} 秒`
   }
   if (normalizedSeconds < 3600) {
-    return `${Math.floor(normalizedSeconds / 60)}m`
+    return `${Math.floor(normalizedSeconds / 60)} 分钟`
   }
-  return `${Math.floor(normalizedSeconds / 3600)}h`
+  return `${Math.floor(normalizedSeconds / 3600)} 小时`
 }
 
 const buildEventPipeline = (eventPipelineStatus) => {

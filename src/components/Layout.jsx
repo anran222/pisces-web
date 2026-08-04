@@ -15,7 +15,7 @@ const navItems = [
   { path: '/ai-center', label: '工作台', icon: BarChart3, description: '优先处理事项与实验进展' },
   { path: '/ai-design', label: '新建实验', icon: Lightbulb, description: '支持直接填写，也可先生成方案' },
   { path: '/experiments', label: '实验列表', icon: FlaskConical, description: '查看状态、配置与结论流转' },
-  { path: '/applications', label: '应用空间', icon: Building2, description: '管理应用、配额与审批策略' },
+  { path: '/applications', label: '应用管理', icon: Building2, description: '管理应用、配额与审批策略' },
   { path: '/variants-lab', label: '生成方案', icon: Sparkles, description: '生成文案和图片候选方案' },
 ]
 
@@ -33,7 +33,7 @@ const pageMap = {
     subtitle: '集中查看实验进展、结论状态和后续处理入口。'
   },
   '/applications': {
-    title: '应用空间',
+    title: '应用管理',
     subtitle: '集中管理应用归属、实验额度和配置/启动审批策略。'
   },
   '/variants-lab': {
