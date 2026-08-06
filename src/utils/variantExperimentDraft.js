@@ -133,7 +133,7 @@ export const buildExperimentDraftFromVariantPlans = ({
   const baseline = normalizeText(form.baseline) || '当前线上方案'
   const groupConfigSchema = [
     {
-      key: 'proposal_content',
+      key: 'proposalContent',
       label: '方案内容',
       valueType: 'STRING',
       required: true,
@@ -141,7 +141,7 @@ export const buildExperimentDraftFromVariantPlans = ({
       defaultValue: baseline,
     },
     {
-      key: 'strategy_direction',
+      key: 'strategyDirection',
       label: '策略方向',
       valueType: 'STRING',
       required: true,
@@ -164,8 +164,8 @@ export const buildExperimentDraftFromVariantPlans = ({
       name: '当前方案',
       trafficRatio: trafficRatios[0],
       config: {
-        proposal_content: baseline,
-        strategy_direction: '保持当前表达策略',
+        proposalContent: baseline,
+        strategyDirection: '保持当前表达策略',
         placement,
       },
     },
@@ -174,8 +174,8 @@ export const buildExperimentDraftFromVariantPlans = ({
       name: normalizeText(plan.name) || `方案 ${index + 1}`,
       trafficRatio: trafficRatios[index + 1],
       config: {
-        proposal_content: plan.imageUrl || normalizeText(plan.content) || '待补充候选内容',
-        strategy_direction: normalizeText(plan.strategy) || '采用候选方案策略',
+        proposalContent: plan.imageUrl || normalizeText(plan.content) || '待补充候选内容',
+        strategyDirection: normalizeText(plan.strategy) || '采用候选方案策略',
         placement,
       },
     })),

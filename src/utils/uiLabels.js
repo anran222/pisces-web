@@ -98,6 +98,25 @@ export const getMetricAggregationLabel = createLabelResolver(METRIC_AGGREGATION_
 export const getMetricDenominatorLabel = createLabelResolver(METRIC_DENOMINATOR_LABELS, '其他分母口径')
 export const getValueTypeLabel = createLabelResolver(VALUE_TYPE_LABELS, '未知类型')
 
+export const formatChineseDateTime = (value, fallback = '-') => {
+  if (!value) {
+    return fallback
+  }
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return fallback
+  }
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).format(date)
+}
+
 const RISK_FLAG_LABELS = {
   ZERO_EXPOSURES: '暂无曝光数据',
   INSUFFICIENT_SAMPLE_SIZE: '样本量不足',
@@ -154,7 +173,11 @@ const SYSTEM_TEXT_REPLACEMENTS = [
   [/\bSDK\b/g, '客户端组件'],
   [/\bCTA\b/g, '行动按钮'],
   [/\bAI\b/g, '智能分析'],
-  [/\bAPI Key\b/gi, '接口密钥']
+  [/\bAPI Key\b/gi, '接口密钥'],
+  [/\bstartTime\b/gi, '开始时间'],
+  [/\bendTime\b/gi, '结束时间'],
+  [/\breplay\b/gi, '重放'],
+  [/\bRedis\b/gi, '实时缓存']
 ]
 
 export const localizeSystemText = (value) => {

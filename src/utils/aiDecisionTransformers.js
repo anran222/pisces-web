@@ -313,14 +313,24 @@ const buildDemoExperimentCard = (key, title, tone, summary, experiment) => {
   }
 }
 
-export const buildDecisionWorkspaceModel = ({ statistics, diagnosis, graduation }) => {
+export const buildDecisionWorkspaceModel = ({
+  statistics,
+  diagnosis,
+  graduation,
+  aiLoading = false,
+  aiFailed = false
+}) => {
   const summary = statistics?.summary || {}
   const quality = statistics?.dataQualityCheck || {}
   const blockingIssues = quality.blockingIssues || []
   const breachedGuardrails = summary.breachedGuardrails || []
-  const fallbackSummary = quality.analysisReady
-    ? '基础统计已就绪，等待智能决策结论。'
-    : '分析尚未就绪，继续运行并累计样本。'
+  const fallbackSummary = aiLoading
+    ? '基础统计已就绪，智能诊断和毕业建议正在生成。'
+    : aiFailed
+      ? '基础统计已就绪，智能分析暂时不可用，请稍后重试。'
+      : quality.analysisReady
+        ? '基础统计已就绪，等待智能决策结论。'
+        : '分析尚未就绪，继续运行并累计样本。'
   const fallbackGuardrailStatus = blockingIssues.length > 0 || breachedGuardrails.length > 0
     ? 'BLOCKED'
     : (quality.analysisReady ? 'PASS' : 'UNKNOWN')

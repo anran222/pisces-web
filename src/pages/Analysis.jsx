@@ -80,6 +80,12 @@ export default function Analysis() {
   const [loading, setLoading] = useState(true)
   const [exporting, setExporting] = useState(false)
   const [activeDecisionPanel, setActiveDecisionPanel] = useState('pipeline')
+  const [aiRequestState, setAiRequestState] = useState({
+    diagnosis: 'idle',
+    graduation: 'idle',
+    diagnosisError: '',
+    graduationError: ''
+  })
   const aiRequestIdRef = useRef(0)
   const timelineRequestIdRef = useRef(0)
 
@@ -90,18 +96,45 @@ export default function Analysis() {
   const loadAiEvidence = async () => {
     const requestId = aiRequestIdRef.current + 1
     aiRequestIdRef.current = requestId
+    setAiRequestState({
+      diagnosis: 'loading',
+      graduation: 'loading',
+      diagnosisError: '',
+      graduationError: ''
+    })
 
-    const [diagnosisRes, graduationRes] = await Promise.allSettled([
-      analysisAPI.getAIDiagnosis(id),
-      analysisAPI.getAIGraduationDecision(id)
-    ])
+    const loadDiagnosis = analysisAPI.getAIDiagnosis(id)
+      .then((response) => {
+        if (requestId !== aiRequestIdRef.current) return
+        setDiagnosis(response.data || response)
+        setAiRequestState(current => ({ ...current, diagnosis: 'success' }))
+      })
+      .catch((error) => {
+        if (requestId !== aiRequestIdRef.current) return
+        setDiagnosis(null)
+        setAiRequestState(current => ({
+          ...current,
+          diagnosis: 'error',
+          diagnosisError: localizeSystemText(error.response?.data?.message || error.message || '智能诊断生成失败')
+        }))
+      })
+    const loadGraduation = analysisAPI.getAIGraduationDecision(id)
+      .then((response) => {
+        if (requestId !== aiRequestIdRef.current) return
+        setGraduation(response.data || response)
+        setAiRequestState(current => ({ ...current, graduation: 'success' }))
+      })
+      .catch((error) => {
+        if (requestId !== aiRequestIdRef.current) return
+        setGraduation(null)
+        setAiRequestState(current => ({
+          ...current,
+          graduation: 'error',
+          graduationError: localizeSystemText(error.response?.data?.message || error.message || '毕业建议生成失败')
+        }))
+      })
 
-    if (requestId !== aiRequestIdRef.current) {
-      return
-    }
-
-    setDiagnosis(diagnosisRes.status === 'fulfilled' ? (diagnosisRes.value.data || diagnosisRes.value) : null)
-    setGraduation(graduationRes.status === 'fulfilled' ? (graduationRes.value.data || graduationRes.value) : null)
+    await Promise.allSettled([loadDiagnosis, loadGraduation])
   }
 
   const loadTimeline = async (metricKey) => {
@@ -183,9 +216,21 @@ export default function Analysis() {
   }
 
   const workspaceModel = useMemo(
-    () => buildDecisionWorkspaceModel({ statistics, diagnosis, graduation }),
-    [statistics, diagnosis, graduation]
+    () => buildDecisionWorkspaceModel({
+      statistics,
+      diagnosis,
+      graduation,
+      aiLoading: aiRequestState.diagnosis === 'loading' || aiRequestState.graduation === 'loading',
+      aiFailed: aiRequestState.diagnosis === 'error' && aiRequestState.graduation === 'error'
+    }),
+    [statistics, diagnosis, graduation, aiRequestState]
   )
+  const aiRequestMessages = [
+    aiRequestState.diagnosis === 'loading' ? '智能诊断生成中' : '',
+    aiRequestState.graduation === 'loading' ? '毕业建议生成中' : '',
+    aiRequestState.diagnosisError,
+    aiRequestState.graduationError
+  ].filter(Boolean)
   const primaryMetricDefinition = useMemo(
     () => resolvePrimaryMetricDefinition(experiment, statistics?.summary),
     [experiment, statistics?.summary]
@@ -390,6 +435,20 @@ export default function Analysis() {
             </div>
           </div>
         </div>
+        {aiRequestMessages.length > 0 ? (
+          <div className="mt-5 flex flex-wrap gap-2 border-t border-slate-200 pt-4">
+            {aiRequestMessages.map(message => (
+              <span key={message} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                {message.endsWith('生成中') ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <AlertTriangle size={14} />
+                )}
+                {message}
+              </span>
+            ))}
+          </div>
+        ) : null}
       </section>
 
       <nav className="rounded-[1.2rem] border border-slate-200 bg-white/85 p-2">

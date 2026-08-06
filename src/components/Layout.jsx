@@ -8,7 +8,7 @@ import {
   Sparkles,
   X
 } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { Suspense, useMemo, useState } from 'react'
 import clsx from 'clsx'
 
 const navItems = [
@@ -58,6 +58,18 @@ const matchPageMeta = (pathname) => {
   return pageMap[pathname] || pageMap['/ai-center']
 }
 
+const RouteLoading = () => (
+  <div className="space-y-5" role="status" aria-label="正在加载页面">
+    <div className="h-28 rounded-[1.2rem] border border-slate-200 bg-white/80 animate-pulse" />
+    <div className="grid gap-5 lg:grid-cols-3">
+      {[1, 2, 3].map(item => (
+        <div key={item} className="h-32 rounded-[1.2rem] border border-slate-200 bg-white/80 animate-pulse" />
+      ))}
+    </div>
+    <div className="h-72 rounded-[1.2rem] border border-slate-200 bg-white/80 animate-pulse" />
+  </div>
+)
+
 export default function Layout() {
   const location = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -68,6 +80,7 @@ export default function Layout() {
       <button
         className="fixed left-4 top-4 z-50 rounded-xl bg-white p-2 shadow-sm lg:hidden"
         onClick={() => setSidebarOpen(!sidebarOpen)}
+        aria-label={sidebarOpen ? '关闭导航' : '打开导航'}
       >
         {sidebarOpen ? <X size={20} /> : <Menu size={20} />}
       </button>
@@ -137,7 +150,9 @@ export default function Layout() {
             </div>
           </header>
 
-          <Outlet />
+          <Suspense fallback={<RouteLoading />}>
+            <Outlet />
+          </Suspense>
         </div>
       </main>
     </div>

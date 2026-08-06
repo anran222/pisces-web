@@ -2,10 +2,43 @@ import axios from 'axios'
 import { buildExperimentListParams } from '../utils/experimentFilters'
 
 const piscesApiKey = import.meta.env.VITE_PISCES_API_KEY
+const DEFAULT_REQUEST_TIMEOUT_MS = 20000
+const LONG_RUNNING_REQUEST_TIMEOUT_MS = 300000
+
+export const isPiscesApiKeyConfigured = Boolean(piscesApiKey)
+
+const localizeAuthorizationError = (error) => {
+  const status = error?.response?.status
+  if (status !== 401 && status !== 403) {
+    return error
+  }
+  const message = !isPiscesApiKeyConfigured
+    ? '本地前端尚未配置管理密钥，请设置 VITE_PISCES_API_KEY 后重新启动前端服务'
+    : (status === 401
+      ? '当前管理密钥无效或已失效，请检查本地 VITE_PISCES_API_KEY 配置'
+      : '当前访问身份无权操作该应用，请切换到有权限的管理密钥')
+  error.message = message
+  if (error.response?.data && typeof error.response.data === 'object') {
+    error.response.data.message = message
+  }
+  return error
+}
+
+const localizeRequestError = (error) => {
+  const localizedError = localizeAuthorizationError(error)
+  if (localizedError?.code === 'ECONNABORTED') {
+    localizedError.message = '请求等待超时，请稍后重试'
+    return localizedError
+  }
+  if (!localizedError?.response && localizedError?.code === 'ERR_NETWORK') {
+    localizedError.message = '无法连接服务，请检查本地服务是否已经启动'
+  }
+  return localizedError
+}
 
 const api = axios.create({
   baseURL: '/api',
-  timeout: 300000, // 提升至5分钟，适配耗时接口
+  timeout: DEFAULT_REQUEST_TIMEOUT_MS,
   headers: {
     'Content-Type': 'application/json',
     ...(piscesApiKey ? { 'X-Pisces-Api-Key': piscesApiKey } : {}),
@@ -16,8 +49,8 @@ const api = axios.create({
 api.interceptors.response.use(
   response => response.data,
   error => {
-    console.error('API Error:', error)
-    return Promise.reject(error)
+    console.error('接口请求失败:', error)
+    return Promise.reject(localizeRequestError(error))
   }
 )
 
@@ -34,6 +67,9 @@ export const experimentAPI = {
   
   // 根据状态查询实验列表
   listByStatus: (status) => api.get(`/experiments/status/${status}`),
+
+  // 在不写入数据的情况下检查实验草案
+  preflight: (data) => api.post('/experiments/preflight', data),
   
   // 获取实验详情
   get: (id) => api.get(`/experiments/${id}`),
@@ -127,7 +163,9 @@ export const experimentAPI = {
   resume: (id) => api.post(`/experiments/${id}/resume`),
 
   // 为已有实验生成真实事件数据
-  simulateData: (id, data) => api.post(`/experiments/generator/${id}/simulate`, data),
+  simulateData: (id, data) => api.post(`/experiments/generator/${id}/simulate`, data, {
+    timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS,
+  }),
 
   // 快速生成演示实验
   generateDemoExperiment: () => api.post('/experiments/generator/demo'),
@@ -174,6 +212,9 @@ export const experimentAPI = {
 export const applicationAPI = {
   // 查询当前 key 可见的应用空间
   list: () => api.get('/applications'),
+
+  // 查询单个应用的接入链路状态
+  getIntegrationHealth: (appId) => api.get(`/applications/${appId}/integration-health`),
 
   // 注册新的应用空间
   register: (appId, data) => api.post(`/applications/${appId}`, data),
@@ -327,19 +368,19 @@ export const analysisAPI = {
   // AI实验设计建议 v2
   designExperiment: (payload) =>
     api.post('/analysis/experiment/ai-design/v2', payload, {
-      timeout: 300000
+      timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS
     }),
 
   // AI实验诊断
   getAIDiagnosis: (experimentId) =>
     api.get(`/analysis/experiment/${experimentId}/ai-diagnosis`, {
-      timeout: 300000
+      timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS
     }),
 
   // AI毕业决策
   getAIGraduationDecision: (experimentId) =>
     api.get(`/analysis/experiment/${experimentId}/ai-graduation-decision`, {
-      timeout: 300000
+      timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS
     }),
 }
 
@@ -347,16 +388,22 @@ export const analysisAPI = {
 export const variantAPI = {
   // 生成文本变体
   generateText: (prompt, count = 10) =>
-    api.post('/variants/text/generate', null, { params: { prompt, count } }),
+    api.post('/variants/text/generate', null, {
+      params: { prompt, count },
+      timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS,
+    }),
   
   // 生成图像变体
   generateImage: (prompt, count = 5) =>
-    api.post('/variants/image/generate', null, { params: { prompt, count } }),
+    api.post('/variants/image/generate', null, {
+      params: { prompt, count },
+      timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS,
+    }),
 
   // 统一生成候选变体
   generateCandidates: (payload) =>
     api.post('/variants/generate', payload, {
-      timeout: 300000
+      timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS
     }),
 }
 

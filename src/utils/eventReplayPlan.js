@@ -28,6 +28,37 @@ export const buildEventReplayPlanRequest = (draft = {}) => {
   }
 }
 
+export const validateEventReplayPlanDraft = (draft = {}) => {
+  const startTime = normalizeText(draft.startTime)
+  const endTime = normalizeText(draft.endTime)
+  const segmentCount = Math.trunc(Number(draft.segmentCount))
+  if (Boolean(startTime) !== Boolean(endTime)) {
+    return {
+      valid: false,
+      message: '开始时间和结束时间需要同时填写'
+    }
+  }
+  if (startTime && endTime && new Date(endTime).getTime() <= new Date(startTime).getTime()) {
+    return {
+      valid: false,
+      message: '结束时间必须晚于开始时间'
+    }
+  }
+  if (Number.isFinite(segmentCount) && segmentCount > 1 && (!startTime || !endTime)) {
+    return {
+      valid: false,
+      message: '分段巡检需要填写完整的开始时间和结束时间'
+    }
+  }
+  if (draft.includeEvents === false && draft.includeExposures === false) {
+    return {
+      valid: false,
+      message: '请至少选择事件或曝光中的一种数据'
+    }
+  }
+  return { valid: true, message: '' }
+}
+
 export const buildReplayPlanGroupRows = (plan = null) => (
   Array.isArray(plan?.groups)
     ? plan.groups.map(group => {

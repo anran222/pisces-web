@@ -16,6 +16,7 @@ const layoutAuditStrict = process.env.PISCES_WEB_LAYOUT_AUDIT_STRICT !== 'false'
 const chromePath = process.env.PISCES_PLAYWRIGHT_CHROME_PATH
   || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const layoutAuditRecords = [];
+const runtimeErrors = [];
 const HORIZONTAL_WORKSPACE = { requireViewportFit: true, maxScrollRatio: 1.08 };
 const HORIZONTAL_MODAL = { requireViewportFit: true, requireDialogWithinViewport: true, maxScrollRatio: 1.08 };
 
@@ -612,7 +613,30 @@ async function stabilize(page) {
   });
 }
 
+async function assertPageHealthy(page, checkpoint) {
+  const state = await page.evaluate(() => {
+    const root = document.getElementById('root');
+    const rootText = root?.innerText?.trim() || '';
+    return {
+      hasRoot: Boolean(root),
+      rootChildCount: root?.childElementCount || 0,
+      rootTextLength: rootText.length,
+      errorBoundaryVisible: rootText.includes('当前页面未能正常显示'),
+    };
+  });
+  const problems = [];
+  if (!state.hasRoot) problems.push('missing #root element');
+  if (state.rootChildCount === 0) problems.push('empty #root element');
+  if (state.rootTextLength < 10) problems.push(`insufficient rendered text: ${state.rootTextLength}`);
+  if (state.errorBoundaryVisible) problems.push('global error recovery page is visible');
+  if (runtimeErrors.length > 0) problems.push(`${runtimeErrors.length} browser runtime error(s)`);
+  if (problems.length > 0) {
+    throw new Error(`UI runtime check failed at ${checkpoint}: ${problems.join('; ')}`);
+  }
+}
+
 async function capture(page, fileName) {
+  await assertPageHealthy(page, fileName);
   const filePath = path.join(outDir, fileName);
   await page.screenshot({ path: filePath, fullPage: false });
   await collectLayoutAudit(page, fileName);
@@ -620,6 +644,7 @@ async function capture(page, fileName) {
 }
 
 async function captureWithLayout(page, fileName, layoutOptions) {
+  await assertPageHealthy(page, fileName);
   const filePath = path.join(outDir, fileName);
   await page.screenshot({ path: filePath, fullPage: false });
   await collectLayoutAudit(page, fileName, layoutOptions);
@@ -707,11 +732,12 @@ async function collectLayoutAudit(page, fileName, options = {}) {
 
 function writeLayoutAudit() {
   const failed = layoutAuditRecords.filter(record => record.enforced && record.status === 'FAIL');
+  const runtimeStatus = runtimeErrors.length === 0 ? 'PASS' : 'FAIL';
   const summary = {
     summaryType: 'pisces-web-core-layout-audit',
     summaryVersion: 1,
     generatedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
-    status: failed.length === 0 ? 'PASS' : 'FAIL',
+    status: failed.length === 0 && runtimeStatus === 'PASS' ? 'PASS' : 'FAIL',
     strict: layoutAuditStrict,
     screenshotDir: path.relative(repoRoot, outDir),
     viewportContract: 'desktop landscape core workspaces should avoid body-level vertical scrolling',
@@ -719,12 +745,17 @@ function writeLayoutAudit() {
     screenshotCount: layoutAuditRecords.length,
     failedCount: failed.length,
     failedScreens: failed.map(record => record.fileName),
+    runtimeStatus,
+    runtimeErrorCount: runtimeErrors.length,
+    runtimeErrors,
     records: layoutAuditRecords,
   };
   fs.writeFileSync(layoutAuditFile, `${JSON.stringify(summary, null, 2)}\n`, 'utf8');
   console.log(layoutAuditFile);
-  if (layoutAuditStrict && failed.length > 0) {
-    throw new Error(`Core layout audit failed for ${failed.length} screenshots: ${failed.map(record => record.fileName).join(', ')}`);
+  if (layoutAuditStrict && (failed.length > 0 || runtimeErrors.length > 0)) {
+    throw new Error(
+      `Core UI audit failed: ${failed.length} layout failure(s), ${runtimeErrors.length} runtime error(s)`,
+    );
   }
 }
 
@@ -745,6 +776,7 @@ async function gotoAndCapture(page, route, headingText, fileName, layoutOptions)
     launchOptions.executablePath = chromePath;
   }
   const browser = await chromium.launch(launchOptions);
+  try {
   const context = await browser.newContext({
     viewport: { width: 1440, height: 1050 },
     deviceScaleFactor: 1,
@@ -752,7 +784,13 @@ async function gotoAndCapture(page, route, headingText, fileName, layoutOptions)
   });
   const page = await context.newPage();
   page.on('dialog', async dialog => dialog.dismiss());
-  page.on('pageerror', error => console.error('pageerror:', error.message));
+  page.on('pageerror', error => {
+    runtimeErrors.push({ type: 'pageerror', url: page.url(), message: error.message });
+  });
+  page.on('console', message => {
+    if (message.type() !== 'error') return;
+    runtimeErrors.push({ type: 'console', url: page.url(), message: message.text() });
+  });
   await installMocks(page);
 
   await gotoAndCapture(page, '/ai-center', '先处理值得关注的实验', '01-ai-center-priority-workspace.png', HORIZONTAL_WORKSPACE);
@@ -763,13 +801,13 @@ async function gotoAndCapture(page, route, headingText, fileName, layoutOptions)
   await captureWithLayout(page, '02b-experiment-workbench-filter-modal.png', HORIZONTAL_MODAL);
   await page.locator('button[title="关闭"]').first().click();
   await page.locator('button[title="查看配置摘要"]').first().click();
-  await page.getByText('Experiment Summary').waitFor({ timeout: 5000 });
+  await page.getByText('实验摘要').waitFor({ timeout: 5000 });
   await page.waitForTimeout(300);
   await captureWithLayout(page, '02c-experiment-workbench-config-summary-modal.png', HORIZONTAL_MODAL);
   await page.locator('button[title="关闭"]').first().click();
   await gotoAndCapture(page, '/experiments/exp_checkout_001', '结账页信任提示实验', '03-experiment-detail-data-nav.png', HORIZONTAL_WORKSPACE);
 
-  await page.getByRole('button', { name: /^配置版本/ }).click();
+  await page.getByRole('button', { name: /^配置管理/ }).click();
   await page.getByText('配置草稿与版本').waitFor({ timeout: 5000 });
   await page.waitForTimeout(300);
   await capture(page, '03b-experiment-config-version-governance.png');
@@ -793,7 +831,7 @@ async function gotoAndCapture(page, route, headingText, fileName, layoutOptions)
   await page.getByText('实时统计').waitFor({ timeout: 5000 });
   await page.waitForTimeout(300);
   await capture(page, '03e0-experiment-statistics-groups.png');
-  await page.getByRole('button', { name: /^MAB 状态/ }).click();
+  await page.getByRole('button', { name: /^动态分流状态/ }).click();
   await page.getByText('多臂老虎机算法状态').waitFor({ timeout: 5000 });
   await page.waitForTimeout(300);
   await capture(page, '03e-experiment-statistics-mab.png');
@@ -804,7 +842,9 @@ async function gotoAndCapture(page, route, headingText, fileName, layoutOptions)
   await page.waitForTimeout(300);
   await capture(page, '04-data-pipeline-status-and-running-replay.png');
   await page.getByRole('button', { name: /^生成计划/ }).first().click();
-  await page.getByPlaceholder('PAY_SUCCESS, PRODUCT_VIEW').fill('PAY_SUCCESS, REFUND_REQUEST');
+  await page.locator('input[type="datetime-local"]').nth(0).fill('2026-07-30T00:00');
+  await page.locator('input[type="datetime-local"]').nth(1).fill('2026-07-30T01:00');
+  await page.getByPlaceholder('输入事件标识，使用逗号分隔').fill('PAY_SUCCESS, REFUND_REQUEST');
   await page.locator('button[title="生成只读重放计划"]').click();
   await page.getByText('计划结果').waitFor({ timeout: 5000 });
   await page.getByText('计划结果').scrollIntoViewIfNeeded();
@@ -815,7 +855,7 @@ async function gotoAndCapture(page, route, headingText, fileName, layoutOptions)
   await capture(page, '05b-data-pipeline-segment-repair.png');
 
   await gotoAndCapture(page, '/experiments/exp_checkout_001/decision', '建议毕业保障前置组', '06-ai-decision-workspace.png', HORIZONTAL_WORKSPACE);
-  await gotoAndCapture(page, '/applications', '应用空间', '07-application-space-governance.png', HORIZONTAL_WORKSPACE);
+  await gotoAndCapture(page, '/applications', '应用管理', '07-application-space-governance.png', HORIZONTAL_WORKSPACE);
 
   await page.goto(`${baseUrl}/ai-design`, { waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: '示例实验' }).click();
@@ -823,15 +863,6 @@ async function gotoAndCapture(page, route, headingText, fileName, layoutOptions)
   await page.waitForTimeout(300);
   await captureWithLayout(page, '08e-ai-design-demo-modal.png', HORIZONTAL_MODAL);
   await page.locator('button[title="关闭示例实验"]').click();
-  await page.getByRole('button', { name: '生成方案' }).first().click();
-  await page.getByRole('heading', { name: '生成实验方案' }).waitFor({ timeout: 5000 });
-  await page.waitForTimeout(300);
-  await captureWithLayout(page, '08f-ai-design-generator-modal.png', HORIZONTAL_MODAL);
-  await page.locator('textarea[placeholder^="例如：二手手机"]').fill('结账页保障承诺与 CTA 文案优化，希望提升支付转化率');
-  await page.locator('input[placeholder="例如：支付转化率"]').fill('支付转化率');
-  await page.getByRole('button', { name: /生成实验方案/ }).click();
-  await page.getByRole('button', { name: /^方案/ }).click();
-  await page.getByText('建议围绕结账页保障承诺').waitFor({ timeout: 5000 });
   await stabilize(page);
   await captureWithLayout(page, '08-ai-design-structured-draft.png', HORIZONTAL_WORKSPACE);
   await page.getByRole('button', { name: /^基础/ }).click();
@@ -839,7 +870,7 @@ async function gotoAndCapture(page, route, headingText, fileName, layoutOptions)
   await page.waitForTimeout(300);
   await captureWithLayout(page, '08b-ai-design-basic-tab.png', HORIZONTAL_WORKSPACE);
   await page.getByRole('button', { name: /^事件/ }).click();
-  await page.getByRole('heading', { name: '事件定义' }).waitFor({ timeout: 5000 });
+  await page.getByRole('heading', { name: '选择实验事件' }).waitFor({ timeout: 5000 });
   await page.waitForTimeout(300);
   await capture(page, '08c-ai-design-event-tab.png');
   await page.getByRole('button', { name: /^分组/ }).click();
@@ -848,14 +879,19 @@ async function gotoAndCapture(page, route, headingText, fileName, layoutOptions)
   await capture(page, '08d-ai-design-group-tab.png');
 
   await page.goto(`${baseUrl}/variants-lab`, { waitUntil: 'domcontentloaded' });
-  await page.getByText('统一候选生成').waitFor({ timeout: 5000 });
-  await page.locator('textarea[placeholder^="例如：为以旧换新页"]').fill('为结账页生成更能解释保障权益的标题和按钮文案');
-  await page.locator('input[placeholder="例如：价格敏感但重视品质保障的用户"]').fill('价格敏感但重视售后保障的用户');
-  await page.getByRole('button', { name: '开始生成候选' }).click();
+  await page.getByText('生成完整实验方案').first().waitFor({ timeout: 5000 });
+  await page.getByPlaceholder('说明希望改善的用户行为或业务结果').fill('为结账页生成更能解释保障权益的标题和按钮文案');
+  await page.getByPlaceholder('描述用户特征、需求和当前顾虑').fill('价格敏感但重视售后保障的用户');
+  await page.getByRole('button', { name: '生成完整方案' }).click();
   await page.getByText('qwen3.7-max', { exact: true }).waitFor({ timeout: 5000 });
   await stabilize(page);
   await captureWithLayout(page, '09-variant-lab-tongyi-model-evidence.png', HORIZONTAL_WORKSPACE);
 
-  await browser.close();
   writeLayoutAudit();
-})();
+  } finally {
+    await browser.close();
+  }
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

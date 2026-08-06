@@ -23,7 +23,8 @@ import {
   getReplayEventTypesLabel,
   getReplayFactScopeLabel,
   getReplayModeLabel,
-  getReplayPlanModeLabel
+  getReplayPlanModeLabel,
+  validateEventReplayPlanDraft
 } from '../utils/eventReplayPlan'
 import { localizeSystemText } from '../utils/uiLabels'
 
@@ -115,6 +116,7 @@ export default function DataPipelineStatus({
     includeExposures: true,
     segmentCount: 4
   })
+  const [replayPlanValidationError, setReplayPlanValidationError] = useState('')
   const pipeline = buildDataPipelineStatus(statistics, eventPipelineStatus)
   const wrapperClassName = ['glass-card p-6', className].filter(Boolean).join(' ')
   const headerStatus = pipeline.hasStatistics
@@ -156,6 +158,7 @@ export default function DataPipelineStatus({
   ]
 
   const updateReplayPlanDraft = (field, value) => {
+    setReplayPlanValidationError('')
     setReplayPlanDraft(current => ({
       ...current,
       [field]: value
@@ -166,6 +169,12 @@ export default function DataPipelineStatus({
     if (!onPlanEventReplay || replayPlanDisabled) {
       return
     }
+    const validation = validateEventReplayPlanDraft(replayPlanDraft)
+    if (!validation.valid) {
+      setReplayPlanValidationError(validation.message)
+      return
+    }
+    setReplayPlanValidationError('')
     onPlanEventReplay(buildEventReplayPlanRequest(replayPlanDraft))
   }
 
@@ -534,9 +543,9 @@ export default function DataPipelineStatus({
                 </label>
               </div>
             </div>
-            {eventReplayPlanError ? (
+            {replayPlanValidationError || eventReplayPlanError ? (
               <p className="mt-3 rounded-lg border border-[#e7c8c4] bg-[#fff7f5] px-3 py-2 text-xs leading-5 text-[#8f3c31]">
-                {localizeSystemText(eventReplayPlanError)}
+                {localizeSystemText(replayPlanValidationError || eventReplayPlanError)}
               </p>
             ) : null}
             {eventReplayPlan ? (

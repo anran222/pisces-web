@@ -34,6 +34,12 @@ import {
   summarizeApplicationSpaces,
 } from '../utils/applicationSpaceGovernance'
 import {
+  buildIntegrationHealthSummary,
+  getIntegrationCheckStatusMeta,
+  getIntegrationStatusMeta,
+  getIntegrationTargetLabel,
+} from '../utils/applicationIntegrationHealth'
+import {
   getApprovalStatusLabel,
   getEscalationStatusLabel,
   getEventCategoryLabel,
@@ -212,6 +218,9 @@ export default function ApplicationSpaces() {
   const [error, setError] = useState('')
   const [activeWorkspacePanel, setActiveWorkspacePanel] = useState('spaces')
   const [selectedAppId, setSelectedAppId] = useState('')
+  const [integrationHealth, setIntegrationHealth] = useState(null)
+  const [integrationHealthLoading, setIntegrationHealthLoading] = useState(false)
+  const [integrationHealthError, setIntegrationHealthError] = useState('')
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [createStep, setCreateStep] = useState(1)
 
@@ -224,6 +233,12 @@ export default function ApplicationSpaces() {
       loadApplicationDictionary(selectedDictionaryAppId)
     }
   }, [selectedDictionaryAppId])
+
+  useEffect(() => {
+    if (activeWorkspacePanel === 'integration' && selectedAppId) {
+      loadIntegrationHealth(selectedAppId)
+    }
+  }, [activeWorkspacePanel, selectedAppId])
 
   const summary = useMemo(
     () => summarizeApplicationSpaces(applicationSpaces),
@@ -327,6 +342,27 @@ export default function ApplicationSpaces() {
       setDictionaryError(localizeSystemText(loadError.response?.data?.message || loadError.message || '应用字典加载失败'))
     } finally {
       setDictionaryLoading(false)
+    }
+  }
+
+  const loadIntegrationHealth = async (appId = selectedAppId) => {
+    const normalizedAppId = String(appId || '').trim()
+    if (!normalizedAppId) {
+      setIntegrationHealth(null)
+      return
+    }
+    try {
+      setIntegrationHealthLoading(true)
+      setIntegrationHealthError('')
+      const response = await applicationAPI.getIntegrationHealth(normalizedAppId)
+      setIntegrationHealth(response.data || response || null)
+    } catch (loadError) {
+      setIntegrationHealth(null)
+      setIntegrationHealthError(localizeSystemText(
+        loadError.response?.data?.message || loadError.message || '应用接入检查加载失败'
+      ))
+    } finally {
+      setIntegrationHealthLoading(false)
     }
   }
 
@@ -678,6 +714,7 @@ export default function ApplicationSpaces() {
   const selectedDraft = selectedSpace
     ? (drafts[selectedSpace.appId] || buildApplicationSpaceDraft(selectedSpace))
     : null
+  const integrationSummary = buildIntegrationHealthSummary(integrationHealth)
   const normalizedNewAppId = newAppId.trim()
   const newAppIdFormatValid = !normalizedNewAppId || APPLICATION_ID_PATTERN.test(normalizedNewAppId)
   const newAppIdAvailable = !applicationSpaces.some(space => space.appId === normalizedNewAppId)
@@ -715,6 +752,7 @@ export default function ApplicationSpaces() {
     && newReleaseWindowValid
   const workspaceTabs = [
     { key: 'spaces', label: '应用列表', count: applicationSpaces.length, icon: Building2 },
+    { key: 'integration', label: '接入检查', count: integrationSummary.total, icon: ShieldCheck },
     { key: 'dictionary', label: '事件字典', count: dictionaryEventDefinitions.length + dictionaryMetricDefinitions.length, icon: BookOpen },
     { key: 'approvals', label: '审批待办', count: approvalTasks.length, icon: Clock3 },
     { key: 'escalations', label: '升级告警', count: approvalEscalations.length, icon: BellRing },
@@ -790,6 +828,139 @@ export default function ApplicationSpaces() {
         </div>
         </nav>
       </section>
+
+      {activeWorkspacePanel === 'integration' ? (
+        <section className="glass-card overflow-hidden">
+          <div className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="signal-label">应用接入检查</p>
+              <h2 className="section-title mt-1">从应用登记到业务事件的完整链路</h2>
+              <p className="mt-1 text-sm text-slate-500">逐段核对配置和真实数据，问题可直接跳转到对应处理位置。</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={selectedAppId}
+                onChange={(event) => setSelectedAppId(event.target.value)}
+                className="input h-11 min-w-[260px]"
+                aria-label="选择需要检查的应用"
+              >
+                {applicationSpaces.map(space => (
+                  <option key={space.appId} value={space.appId}>
+                    {space.displayName || space.appId} · {space.appId}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="btn-secondary px-3"
+                title="重新检查应用接入链路"
+                onClick={() => loadIntegrationHealth()}
+                disabled={!selectedAppId || integrationHealthLoading}
+              >
+                <RefreshCw size={17} className={integrationHealthLoading ? 'animate-spin' : ''} />
+              </button>
+            </div>
+          </div>
+
+          {integrationHealthError ? (
+            <div className="m-5 flex items-center gap-3 rounded-xl border border-[#ecd8bf] bg-[#fff8ef] p-4 text-sm text-[#9a6026]">
+              <AlertTriangle size={18} />
+              {integrationHealthError}
+            </div>
+          ) : integrationHealthLoading ? (
+            <div className="grid gap-3 p-5 xl:grid-cols-7">
+              {[1, 2, 3, 4, 5, 6, 7].map(index => (
+                <div key={index} className="h-44 rounded-xl bg-slate-200/60 animate-shimmer" />
+              ))}
+            </div>
+          ) : integrationHealth ? (
+            <div className="p-5">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className={`rounded-full border px-3 py-1 text-sm font-semibold ${getIntegrationStatusMeta(integrationHealth.status).className}`}>
+                    {getIntegrationStatusMeta(integrationHealth.status).label}
+                  </span>
+                  <span className="font-semibold text-slate-900">{integrationHealth.displayName || integrationHealth.appId}</span>
+                  <span className="font-mono text-xs text-slate-500">{integrationHealth.appId}</span>
+                </div>
+                <div className="flex flex-wrap gap-4 text-sm text-slate-600">
+                  <span><strong className="text-[#1e7e57]">{integrationSummary.passed}</strong> 已完成</span>
+                  <span><strong className="text-[#8a6d1d]">{integrationSummary.waiting + integrationSummary.warning}</strong> 待处理</span>
+                  <span><strong className="text-[#9a6026]">{integrationSummary.blocked}</strong> 阻断</span>
+                </div>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-7">
+                {(integrationHealth.checks || []).map((check, index) => {
+                  const statusMeta = getIntegrationCheckStatusMeta(check.status)
+                  const targetHref = check.target === 'experiments'
+                    ? `/ai-design?appId=${encodeURIComponent(integrationHealth.appId)}`
+                    : (check.target === 'runtime'
+                      ? `/experiments?appId=${encodeURIComponent(integrationHealth.appId)}`
+                      : '')
+                  return (
+                    <article key={check.code || index} className="flex min-h-[190px] flex-col rounded-xl border border-slate-200 bg-white p-4">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="flex h-7 w-7 items-center justify-center rounded-full bg-slate-100 text-xs font-bold text-slate-600">
+                          {index + 1}
+                        </span>
+                        <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${statusMeta.className}`}>
+                          {statusMeta.label}
+                        </span>
+                      </div>
+                      <h3 className="mt-3 text-sm font-bold text-slate-900">{check.title}</h3>
+                      <p className="mt-2 flex-1 text-xs leading-5 text-slate-500">{check.detail}</p>
+                      <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3 text-xs">
+                        <span className="text-slate-500">事实数 {formatCount(check.evidenceCount)}</span>
+                        {check.action ? (
+                          targetHref ? (
+                            <Link to={targetHref} className="font-semibold text-[var(--brand)] hover:underline">
+                              {getIntegrationTargetLabel(check.target)}
+                            </Link>
+                          ) : (
+                            <button
+                              type="button"
+                              className="font-semibold text-[var(--brand)] hover:underline"
+                              onClick={() => {
+                                if (check.target === 'dictionary') {
+                                  setSelectedDictionaryAppId(integrationHealth.appId)
+                                  setActiveWorkspacePanel('dictionary')
+                                } else {
+                                  setActiveWorkspacePanel('spaces')
+                                }
+                              }}
+                            >
+                              {getIntegrationTargetLabel(check.target)}
+                            </button>
+                          )
+                        ) : <span className="font-semibold text-[#1e7e57]">无需处理</span>}
+                      </div>
+                    </article>
+                  )
+                })}
+              </div>
+
+              <div className="mt-4 grid gap-3 border-t border-slate-200 pt-4 sm:grid-cols-3 lg:grid-cols-6">
+                {[
+                  ['事件定义', integrationHealth.eventDefinitionCount],
+                  ['指标定义', integrationHealth.metricDefinitionCount],
+                  ['实验配置', integrationHealth.experimentCount],
+                  ['分流事实', integrationHealth.assignmentCount],
+                  ['曝光事实', integrationHealth.exposureCount],
+                  ['业务事件', integrationHealth.eventCount],
+                ].map(([label, value]) => (
+                  <div key={label} className="rounded-lg bg-slate-50 px-3 py-2">
+                    <p className="text-xs text-slate-500">{label}</p>
+                    <p className="mt-1 text-lg font-bold text-slate-900">{formatCount(value)}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="p-10 text-center text-sm text-slate-500">请选择应用后开始接入检查</div>
+          )}
+        </section>
+      ) : null}
 
       {activeWorkspacePanel === 'approvals' ? (
       <section className="glass-card p-5">

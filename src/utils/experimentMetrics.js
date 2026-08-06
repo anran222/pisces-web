@@ -19,6 +19,28 @@ export function buildDashboardMetrics(experiments, statisticsByExperiment) {
 
 const asArray = value => (Array.isArray(value) ? value : [])
 
+const DASHBOARD_STATUS_PRIORITY = {
+  RUNNING: 0,
+  PAUSED: 1,
+  DRAFT: 2,
+  STOPPED: 3,
+}
+
+export function selectDashboardStatisticsTargets(experiments, limit = 6) {
+  const experimentList = Array.isArray(experiments) ? experiments : []
+  const safeLimit = Math.max(0, Number(limit) || 0)
+
+  return experimentList
+    .map((experiment, index) => ({ experiment, index }))
+    .sort((left, right) => {
+      const leftPriority = DASHBOARD_STATUS_PRIORITY[left.experiment?.status] ?? 4
+      const rightPriority = DASHBOARD_STATUS_PRIORITY[right.experiment?.status] ?? 4
+      return leftPriority - rightPriority || left.index - right.index
+    })
+    .slice(0, safeLimit)
+    .map(item => item.experiment)
+}
+
 export function buildDashboardDecisionItems(experiments, statisticsByExperiment) {
   const experimentList = Array.isArray(experiments) ? experiments : []
 

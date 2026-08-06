@@ -9,7 +9,8 @@ import {
   getReplayEventTypesLabel,
   getReplayFactScopeLabel,
   getReplayModeLabel,
-  getReplayPlanModeLabel
+  getReplayPlanModeLabel,
+  validateEventReplayPlanDraft
 } from './eventReplayPlan.js'
 
 test('buildEventReplayPlanRequest normalizes filters and event types', () => {
@@ -37,6 +38,32 @@ test('buildEventReplayPlanRequest returns explicit default fact scopes', () => {
     includeEvents: true,
     includeExposures: true
   })
+})
+
+test('validateEventReplayPlanDraft requires a complete ordered time range for segments', () => {
+  assert.deepEqual(validateEventReplayPlanDraft({
+    startTime: '2026-07-30T10:00',
+    endTime: '',
+    segmentCount: 4
+  }), {
+    valid: false,
+    message: '开始时间和结束时间需要同时填写'
+  })
+  assert.equal(validateEventReplayPlanDraft({
+    startTime: '2026-07-30T12:00',
+    endTime: '2026-07-30T10:00',
+    segmentCount: 4
+  }).message, '结束时间必须晚于开始时间')
+  assert.equal(validateEventReplayPlanDraft({
+    startTime: '',
+    endTime: '',
+    segmentCount: 4
+  }).message, '分段巡检需要填写完整的开始时间和结束时间')
+  assert.deepEqual(validateEventReplayPlanDraft({
+    startTime: '2026-07-30T10:00',
+    endTime: '2026-07-30T12:00',
+    segmentCount: 4
+  }), { valid: true, message: '' })
 })
 
 test('buildReplayPlanGroupRows normalizes numeric counters', () => {

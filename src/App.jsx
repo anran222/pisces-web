@@ -1,12 +1,14 @@
+import { lazy } from 'react'
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import Layout from './components/Layout'
-import Dashboard from './pages/Dashboard'
-import ExperimentList from './pages/ExperimentList'
-import ExperimentDetail from './pages/ExperimentDetail'
-import CreateExperiment from './pages/CreateExperiment'
-import Analysis from './pages/Analysis'
-import VariantGenerator from './pages/VariantGenerator'
-import ApplicationSpaces from './pages/ApplicationSpaces'
+
+const Dashboard = lazy(() => import('./pages/Dashboard'))
+const ExperimentList = lazy(() => import('./pages/ExperimentList'))
+const ExperimentDetail = lazy(() => import('./pages/ExperimentDetail'))
+const CreateExperiment = lazy(() => import('./pages/CreateExperiment'))
+const Analysis = lazy(() => import('./pages/Analysis'))
+const VariantGenerator = lazy(() => import('./pages/VariantGenerator'))
+const ApplicationSpaces = lazy(() => import('./pages/ApplicationSpaces'))
 
 function App() {
   return (

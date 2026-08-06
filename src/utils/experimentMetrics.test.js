@@ -1,6 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildDashboardDecisionItems, buildDashboardMetrics } from './experimentMetrics.js'
+import {
+  buildDashboardDecisionItems,
+  buildDashboardMetrics,
+  selectDashboardStatisticsTargets,
+} from './experimentMetrics.js'
 
 test('buildDashboardMetrics aggregates real experiment statistics', () => {
   const metrics = buildDashboardMetrics(
@@ -62,4 +66,17 @@ test('buildDashboardDecisionItems derives priority from lightweight statistics',
   assert.equal(items[1].analysisReady, true)
   assert.equal(items[1].decision, 'RECOMMENDATION')
   assert.equal(items[1].totalVisitors, 320)
+})
+
+test('selectDashboardStatisticsTargets prioritizes active experiments and caps requests', () => {
+  const targets = selectDashboardStatisticsTargets([
+    { id: 'finished', status: 'STOPPED' },
+    { id: 'draft', status: 'DRAFT' },
+    { id: 'running-a', status: 'RUNNING' },
+    { id: 'paused', status: 'PAUSED' },
+    { id: 'running-b', status: 'RUNNING' },
+  ], 3)
+
+  assert.deepEqual(targets.map(item => item.id), ['running-a', 'running-b', 'paused'])
+  assert.deepEqual(selectDashboardStatisticsTargets(null), [])
 })

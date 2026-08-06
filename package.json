@@ -8,6 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "node --test src/utils/*.test.js",
+    "test:ui": "node scripts/capture-core-functions.cjs",
+    "test:ui:real": "node scripts/real-workflow-smoke.cjs",
     "capture:core": "node scripts/capture-core-functions.cjs",
     "audit:core-layout": "PISCES_WEB_LAYOUT_AUDIT_STRICT=true node scripts/capture-core-functions.cjs",
     "audit:prod-high": "npm audit --omit=dev --audit-level=high"

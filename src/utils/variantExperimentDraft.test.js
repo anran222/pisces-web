@@ -53,8 +53,12 @@ test('buildExperimentDraftFromVariantPlan creates a complete experiment draft', 
   assert.equal(result.draft.metricDefinitions.find(metric => metric.key === 'REFUND_REQUEST_RATE').guardrailMetric, true)
   assert.equal(result.draft.groupConfigSchema.length, 3)
   assert.equal(result.draft.groups.length, 2)
-  assert.equal(result.draft.groups[0].config.proposal_content, '当前只展示价格')
-  assert.equal(result.draft.groups[1].config.proposal_content, '官方99道质检，附完整报告')
+  assert.equal(result.draft.groups[0].config.proposalContent, '当前只展示价格')
+  assert.equal(result.draft.groups[1].config.proposalContent, '官方99道质检，附完整报告')
+  assert.deepEqual(
+    result.draft.groupConfigSchema.map(field => field.key),
+    ['proposalContent', 'strategyDirection', 'placement']
+  )
   assert.deepEqual(result.draft.traffic.allocation, [
     { group: 'control', ratio: 0.5 },
     { group: 'variant_a', ratio: 0.5 },

@@ -10,6 +10,7 @@ import {
   Loader2,
   PencilLine,
   Plus,
+  ShieldCheck,
   Sparkles,
   Trash2,
   X
@@ -42,6 +43,12 @@ import {
   localizeSystemText,
   TRAFFIC_STRATEGY_OPTIONS,
 } from '../utils/uiLabels'
+import {
+  buildPreflightFingerprint,
+  buildPreflightGroups,
+  getPreflightStatusMeta,
+  shouldConfirmPreflightWarnings,
+} from '../utils/experimentPreflight'
 
 const DEFAULT_TRAFFIC_STRATEGY = 'HASH'
 const DEFAULT_TOTAL_TRAFFIC = 1
@@ -76,78 +83,6 @@ const formatEditableValue = (value, valueType) => {
   return String(value)
 }
 
-const getMissingRequiredDraftMessage = (draftPayload) => {
-  const eventDefinitions = draftPayload?.eventDefinitions || []
-  const metricDefinitions = draftPayload?.metricDefinitions || []
-  const groups = draftPayload?.groups || []
-  const primaryMetricCount = metricDefinitions.filter(metric => metric?.primaryMetric).length
-
-  if (!normalizeText(draftPayload?.appId)) {
-    return '请选择应用空间'
-  }
-  if (!normalizeText(draftPayload?.name)) {
-    return '请填写实验名称'
-  }
-  if (groups.length < 2) {
-    return '请至少保留两个实验组'
-  }
-  if (groups.some(group => !normalizeText(group?.id) || !normalizeText(group?.name))) {
-    return '请完整填写实验组标识和名称'
-  }
-  if (new Set(groups.map(group => normalizeText(group.id))).size !== groups.length) {
-    return '实验组标识不能重复'
-  }
-  const totalGroupTraffic = groups.reduce((total, group) => total + Number(group.trafficRatio || 0), 0)
-  if (Math.abs(totalGroupTraffic - 1) > 0.001) {
-    return '实验组流量比例之和必须为 1'
-  }
-  const requiredSchemaFields = (draftPayload?.groupConfigSchema || [])
-    .filter(field => field?.required && normalizeText(field?.key))
-  for (const group of groups) {
-    for (const field of requiredSchemaFields) {
-      const fieldValue = group?.config?.[field.key]
-      if (fieldValue === null || fieldValue === undefined || fieldValue === '') {
-        return `实验组「${group.name || group.id}」缺少必填字段「${field.label || field.key}」`
-      }
-    }
-  }
-  if (eventDefinitions.length === 0) {
-    return '请至少定义一个事件'
-  }
-  for (const eventDefinition of eventDefinitions) {
-    if (!normalizeText(eventDefinition?.key) || !normalizeText(eventDefinition?.label)) {
-      return '请完整填写事件定义'
-    }
-    if (!EVENT_KEY_PATTERN.test(normalizeText(eventDefinition.key).toUpperCase())) {
-      return '事件编码只支持大写字母、数字和下划线'
-    }
-  }
-
-  if (metricDefinitions.length === 0) {
-    return '请至少定义一个指标'
-  }
-  if (primaryMetricCount !== 1) {
-    return '必须且只能选择一个主指标'
-  }
-  for (const metricDefinition of metricDefinitions) {
-    if (!normalizeText(metricDefinition?.key) || !normalizeText(metricDefinition?.name)) {
-      return '请完整填写指标定义'
-    }
-    if (!EVENT_KEY_PATTERN.test(normalizeText(metricDefinition.key).toUpperCase())) {
-      return '指标编码只支持大写字母、数字和下划线'
-    }
-    if (!normalizeText(metricDefinition?.numeratorEventType)) {
-      return '请为指标选择事件'
-    }
-    if (metricDefinition?.aggregationType === 'RATE' && metricDefinition?.denominatorType === 'EVENT_COUNT'
-      && !normalizeText(metricDefinition?.denominatorEventType)) {
-      return '比率指标需要选择分母事件'
-    }
-  }
-
-  return ''
-}
-
 export default function CreateExperiment() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -162,6 +97,11 @@ export default function CreateExperiment() {
   const [demoDialogOpen, setDemoDialogOpen] = useState(false)
   const [importedVariantPlanName, setImportedVariantPlanName] = useState('')
   const [importedVariantSummary, setImportedVariantSummary] = useState(null)
+  const [preflightResult, setPreflightResult] = useState(null)
+  const [preflightFingerprint, setPreflightFingerprint] = useState('')
+  const [preflightLoading, setPreflightLoading] = useState(false)
+  const [preflightError, setPreflightError] = useState('')
+  const [preflightOpen, setPreflightOpen] = useState(false)
 
   useEffect(() => {
     loadApplicationSpaces()
@@ -225,7 +165,7 @@ export default function CreateExperiment() {
         ? baseDraft.groups
         : buildDefaultExperimentCreatePayload().groups
       const planField = {
-        key: 'proposal_content',
+        key: 'proposalContent',
         label: '方案内容',
         valueType: 'STRING',
         required: true,
@@ -248,7 +188,7 @@ export default function CreateExperiment() {
           name: index === 0 ? '当前方案' : (index === 1 ? (variantPlan.planName || '候选方案') : group.name),
           config: {
             ...(group.config || {}),
-            proposal_content: index === 0
+            proposalContent: index === 0
               ? (variantPlan.baseline || '当前线上方案')
               : (variantPlan.candidateContent || '')
           }
@@ -273,10 +213,18 @@ export default function CreateExperiment() {
     try {
       const responseData = await applicationAPI.list()
       const spaces = responseData.data || responseData || []
+      const requestedAppId = new URLSearchParams(location.search).get('appId')
       setApplicationSpaces(spaces)
       if (spaces.length > 0) {
         setDraftPayload(current => (
-          normalizeText(current.appId) ? current : { ...current, appId: spaces[0].appId }
+          normalizeText(current.appId)
+            ? current
+            : {
+                ...current,
+                appId: spaces.some(space => space.appId === requestedAppId)
+                  ? requestedAppId
+                  : spaces[0].appId,
+              }
         ))
       }
     } catch (error) {
@@ -557,19 +505,56 @@ export default function CreateExperiment() {
     setImportedVariantSummary(null)
   }
 
+  const buildCurrentCreatePayload = () => buildExperimentCreatePayload({ experimentDraft: draftPayload })
+
+  const runPreflight = async (payload = buildCurrentCreatePayload()) => {
+    setPreflightOpen(true)
+    setPreflightLoading(true)
+    setPreflightError('')
+    try {
+      const response = await experimentAPI.preflight(payload)
+      const result = response.data || response || null
+      setPreflightResult(result)
+      setPreflightFingerprint(buildPreflightFingerprint(payload))
+      return result
+    } catch (error) {
+      setPreflightResult(null)
+      setPreflightFingerprint('')
+      setPreflightError(localizeSystemText(
+        error.response?.data?.message || error.message || '创建前检查失败'
+      ))
+      return null
+    } finally {
+      setPreflightLoading(false)
+    }
+  }
+
+  const handleOpenPreflight = async () => {
+    if (!draftPayload) return
+    try {
+      await runPreflight(buildCurrentCreatePayload())
+    } catch (error) {
+      setPreflightOpen(true)
+      setPreflightError(localizeSystemText(error.message || '实验草案格式不正确'))
+    }
+  }
+
   const handleCreateExperiment = async () => {
     if (!draftPayload) {
       return
     }
-    const missingRequiredDraftMessage = getMissingRequiredDraftMessage(draftPayload)
-    if (missingRequiredDraftMessage) {
-      alert(missingRequiredDraftMessage)
+    const payload = buildCurrentCreatePayload()
+    const currentFingerprint = buildPreflightFingerprint(payload)
+    if (!preflightResult || preflightFingerprint !== currentFingerprint) {
+      await runPreflight(payload)
       return
     }
+    if (!preflightResult.readyToCreate) return
+    if (shouldConfirmPreflightWarnings(preflightResult)
+      && !window.confirm(`仍有 ${preflightResult.warningCount} 项建议需要确认，确定继续创建实验吗？`)) return
 
     try {
       setCreating(true)
-      const payload = buildExperimentCreatePayload({ experimentDraft: draftPayload })
       const result = await experimentAPI.create(payload)
       const created = result.data || result
       const experimentId = created.id || created.experimentId
@@ -610,6 +595,13 @@ export default function CreateExperiment() {
     { key: 'schema', label: '字段', meta: `${groupConfigSchema.length}` },
     { key: 'groups', label: '分组', meta: `${draftGroups.length}` }
   ]
+  const preflightGroups = buildPreflightGroups(preflightResult)
+  const currentDraftFingerprint = draftPayload
+    ? buildPreflightFingerprint(buildCurrentCreatePayload())
+    : ''
+  const preflightStale = Boolean(
+    preflightResult && preflightFingerprint && preflightFingerprint !== currentDraftFingerprint
+  )
 
   return (
     <div className="space-y-6">
@@ -677,9 +669,9 @@ export default function CreateExperiment() {
               <h2 className="section-title mt-2">实验配置</h2>
             </div>
             <div className="flex flex-wrap items-center gap-3 xl:justify-end">
-              <button onClick={handleCreateExperiment} disabled={creating} className="btn-primary shrink-0">
-                {creating ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />}
-                创建实验
+              <button onClick={handleOpenPreflight} disabled={creating || preflightLoading} className="btn-primary shrink-0">
+                {preflightLoading ? <Loader2 size={18} className="animate-spin" /> : <ShieldCheck size={18} />}
+                创建前检查
               </button>
             </div>
           </div>
@@ -1362,6 +1354,171 @@ export default function CreateExperiment() {
               </div>
             </div>
       </section>
+
+      {preflightOpen ? (
+        <div className="fixed inset-0 z-50 bg-slate-950/35" role="dialog" aria-modal="true" aria-label="实验创建前检查">
+          <button
+            type="button"
+            className="absolute inset-0 h-full w-full cursor-default"
+            onClick={() => setPreflightOpen(false)}
+            aria-label="关闭创建前检查"
+          />
+          <aside className="relative ml-auto flex h-full w-full max-w-2xl flex-col border-l border-slate-200 bg-white shadow-2xl">
+            <header className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 px-6 py-5">
+              <div>
+                <p className="signal-label">创建前检查</p>
+                <h2 className="mt-1 text-xl font-bold text-slate-900">一次确认完整实验配置</h2>
+                <p className="mt-1 text-sm text-slate-500">阻断项必须修正，提醒项确认后可以继续创建。</p>
+              </div>
+              <button
+                type="button"
+                className="rounded-lg border border-slate-200 p-2 text-slate-500 hover:bg-slate-50 hover:text-slate-900"
+                onClick={() => setPreflightOpen(false)}
+                title="关闭创建前检查"
+              >
+                <X size={18} />
+              </button>
+            </header>
+
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+              {preflightLoading ? (
+                <div className="space-y-3">
+                  {[1, 2, 3, 4].map(index => (
+                    <div key={index} className="h-24 rounded-xl bg-slate-200/60 animate-shimmer" />
+                  ))}
+                </div>
+              ) : preflightError ? (
+                <div className="flex items-start gap-3 rounded-xl border border-[#ecd8bf] bg-[#fff8ef] p-4 text-sm text-[#9a6026]">
+                  <AlertTriangle size={18} className="mt-0.5 shrink-0" />
+                  <div>
+                    <p className="font-semibold">检查未完成</p>
+                    <p className="mt-1">{preflightError}</p>
+                  </div>
+                </div>
+              ) : preflightResult ? (
+                <div className="space-y-5">
+                  <div className={`flex items-center justify-between gap-3 rounded-xl border px-4 py-3 ${
+                    preflightResult.readyToCreate
+                      ? 'border-[#cde5d7] bg-[#f6fbf8]'
+                      : 'border-[#ecd8bf] bg-[#fff8ef]'
+                  }`}>
+                    <div className="flex items-center gap-3">
+                      {preflightResult.readyToCreate
+                        ? <CheckCircle2 size={20} className="text-[#1e7e57]" />
+                        : <AlertTriangle size={20} className="text-[#9a6026]" />}
+                      <div>
+                        <p className="font-bold text-slate-900">
+                          {preflightResult.readyToCreate ? '可以创建实验' : '当前不能创建实验'}
+                        </p>
+                        <p className="mt-0.5 text-xs text-slate-600">
+                          {preflightResult.blockingCount || 0} 项阻断 · {preflightResult.warningCount || 0} 项提醒
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-sm font-semibold text-slate-700">
+                      {(preflightResult.checks || []).length} 项检查
+                    </span>
+                  </div>
+
+                  {preflightStale ? (
+                    <div className="flex items-center gap-3 rounded-xl border border-[#f3e3a0] bg-[#fffbea] px-4 py-3 text-sm text-[#8a6d1d]">
+                      <AlertTriangle size={17} />
+                      草案已发生变化，请重新检查后再创建。
+                    </div>
+                  ) : null}
+
+                  <section className="border-y border-slate-200 py-4">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div>
+                        <p className="text-xs text-slate-500">应用与实验</p>
+                        <p className="mt-1 font-semibold text-slate-900">
+                          {preflightResult.summary?.applicationName || preflightResult.summary?.appId || '未选择应用'}
+                        </p>
+                        <p className="mt-1 text-sm text-slate-600">{preflightResult.summary?.experimentName || '未填写实验名称'}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-slate-500">实验范围</p>
+                        <p className="mt-1 text-sm font-semibold text-slate-900">
+                          {preflightResult.summary?.groupCount || 0} 个分组 · {preflightResult.summary?.eventCount || 0} 个事件 · {preflightResult.summary?.metricCount || 0} 个指标
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          总流量 {Math.round(Number(preflightResult.summary?.totalTraffic || 0) * 100)}%
+                        </p>
+                      </div>
+                    </div>
+                    {preflightResult.applicationGovernance ? (
+                      <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                        <span>剩余实验额度 {preflightResult.applicationGovernance.quotaRemaining ?? '不限'}</span>
+                        <span>{preflightResult.applicationGovernance.approvalRequired ? '创建后需要审批' : '创建后无需审批'}</span>
+                        <span>{preflightResult.applicationGovernance.releaseWindowEnabled
+                          ? (preflightResult.applicationGovernance.releaseWindowDescription || '已设置发布窗口')
+                          : '未限制发布窗口'}</span>
+                      </div>
+                    ) : null}
+                  </section>
+
+                  <div className="space-y-5">
+                    {preflightGroups.map(group => (
+                      <section key={group.section}>
+                        <h3 className="mb-2 text-sm font-bold text-slate-900">{group.section}</h3>
+                        <div className="divide-y divide-slate-100 border-y border-slate-200">
+                          {group.checks.map((check, index) => {
+                            const statusMeta = getPreflightStatusMeta(check.status)
+                            return (
+                              <div key={check.code || index} className="flex items-start gap-3 py-3">
+                                <span className={`mt-0.5 shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${statusMeta.className}`}>
+                                  {statusMeta.label}
+                                </span>
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-sm font-semibold text-slate-900">{check.title}</p>
+                                  <p className="mt-1 text-xs leading-5 text-slate-500">{check.detail}</p>
+                                  {check.action && check.status !== 'PASS' ? (
+                                    <button
+                                      type="button"
+                                      className="mt-2 text-xs font-semibold text-[var(--brand)] hover:underline"
+                                      onClick={() => {
+                                        setActiveDraftPanel(check.targetPanel || 'basics')
+                                        setPreflightOpen(false)
+                                      }}
+                                    >
+                                      {check.action}
+                                    </button>
+                                  ) : null}
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </section>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-slate-200 bg-white px-6 py-4">
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={handleOpenPreflight}
+                disabled={preflightLoading || creating}
+              >
+                {preflightLoading ? <Loader2 size={17} className="animate-spin" /> : <ShieldCheck size={17} />}
+                重新检查
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={handleCreateExperiment}
+                disabled={!preflightResult?.readyToCreate || preflightStale || preflightLoading || creating}
+              >
+                {creating ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />}
+                确认创建实验
+              </button>
+            </footer>
+          </aside>
+        </div>
+      ) : null}
     </div>
   )
 }

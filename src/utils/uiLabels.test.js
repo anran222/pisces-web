@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  formatChineseDateTime,
   getApprovalStatusLabel,
   getDecisionLabel,
   getGuardrailStatusLabel,
@@ -26,4 +27,11 @@ test('AI and backend explanations replace known English protocol values', () => 
   )
   assert.equal(localizeSystemText('实验组B NO_DATA'), '实验组二 暂无数据')
   assert.equal(getRiskFlagLabel('SAMPLE_SIZE_NOT_REACHED'), '样本量尚未达标')
+  assert.equal(localizeSystemText('startTime/endTime replay Redis'), '开始时间/结束时间 重放 实时缓存')
+})
+
+test('date time values use Chinese 24 hour formatting', () => {
+  const formatted = formatChineseDateTime('2026-08-05T09:30:00')
+  assert.match(formatted, /2026/)
+  assert.match(formatted, /09:30:00/)
 })

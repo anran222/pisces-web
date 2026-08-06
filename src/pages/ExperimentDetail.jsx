@@ -63,6 +63,7 @@ import {
   METRIC_DENOMINATOR_TYPE_OPTIONS
 } from '../utils/aiDecisionTransformers'
 import {
+  formatChineseDateTime,
   getConclusionStatusLabel,
   getEventCategoryLabel,
   getMetricAggregationLabel,
@@ -174,7 +175,7 @@ const normalizeNumberInput = (value, fallback) => {
 }
 const formatDateTimeLocalValue = (value) => (value || '').slice(0, 16)
 const formatAuditDateTime = (value) => (
-  value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'
+  formatChineseDateTime(value)
 )
 const getResponseData = (value) => (
   value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'data')
@@ -1164,7 +1165,7 @@ export default function ExperimentDetail() {
   const detailTabs = [
     { key: 'effect', label: '应用效果', count: Object.keys(experimentGroups).length },
     { key: 'data', label: '数据链路', count: eventReplayJobs.length + (eventReplayPlan ? 1 : 0) },
-    { key: 'config', label: '配置版本', count: configVersions.length + (hasConfigDraft ? 1 : 0) },
+    { key: 'config', label: '配置管理', count: configVersions.length + (hasConfigDraft ? 1 : 0) },
     { key: 'audit', label: '审计', count: auditLogs.length },
     { key: 'runtime', label: '实验结构', count: Object.keys(experimentGroups).length },
     { key: 'decision', label: '结论', count: currentConclusionStatus === 'READY_FOR_REVIEW' ? 1 : 0 },
@@ -1182,7 +1183,7 @@ export default function ExperimentDetail() {
     { key: 'draft', label: '待发布草稿', count: hasConfigDraft ? 1 : 0 },
     { key: 'approvals', label: '审批历史', count: configDraftApprovals.length },
     { key: 'snapshot', label: '补录快照', count: currentConfigVersion ? 1 : 0 },
-    { key: 'versions', label: '发布版本', count: configVersions.length }
+    { key: 'versions', label: '发布历史', count: configVersions.length }
   ]
   const runtimeTabs = [
     { key: 'overview', label: '概览', count: Object.keys(experimentGroups).length },
@@ -2289,7 +2290,7 @@ export default function ExperimentDetail() {
           </div>
         ) : configVersions.length === 0 ? (
           <div className="mt-5 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
-            当前实验还没有已发布配置版本。
+            当前运行版本为 v{currentConfigVersion || '-'}，尚未记录发布快照。
           </div>
         ) : (
           <div className="mt-5 max-h-[58vh] overflow-auto rounded-2xl border border-slate-200 bg-white">
@@ -2490,13 +2491,13 @@ export default function ExperimentDetail() {
             <div className="flex justify-between gap-4">
               <span className="text-slate-500">开始时间</span>
               <span className="text-slate-900 text-right">
-                {experiment.startTime ? new Date(experiment.startTime).toLocaleString() : '-'}
+                {formatChineseDateTime(experiment.startTime)}
               </span>
             </div>
             <div className="flex justify-between gap-4">
               <span className="text-slate-500">结束时间</span>
               <span className="text-slate-900 text-right">
-                {experiment.endTime ? new Date(experiment.endTime).toLocaleString() : '-'}
+                {formatChineseDateTime(experiment.endTime)}
               </span>
             </div>
             {experiment.description ? (
@@ -2768,7 +2769,7 @@ export default function ExperimentDetail() {
                   {getConclusionStatusLabel(currentConclusionStatus)}
                 </p>
                 <p className="text-slate-400 text-xs mt-1">
-                  {experiment.conclusionUpdatedAt ? new Date(experiment.conclusionUpdatedAt).toLocaleString() : '暂无更新时间'}
+                  {formatChineseDateTime(experiment.conclusionUpdatedAt, '暂无更新时间')}
                 </p>
               </div>
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -2779,7 +2780,7 @@ export default function ExperimentDetail() {
                     : '-'}
                 </p>
                 <p className="text-slate-400 text-xs mt-1">
-                  {experiment.suggestedConclusionUpdatedAt ? new Date(experiment.suggestedConclusionUpdatedAt).toLocaleString() : '暂无建议更新时间'}
+                  {formatChineseDateTime(experiment.suggestedConclusionUpdatedAt, '暂无建议更新时间')}
                 </p>
               </div>
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -2809,7 +2810,7 @@ export default function ExperimentDetail() {
                     人工确认人：{experiment.conclusionOperator || '-'}
                   </span>
                   <span className="text-slate-400">
-                    {experiment.conclusionUpdatedAt ? new Date(experiment.conclusionUpdatedAt).toLocaleString() : '-'}
+                    {formatChineseDateTime(experiment.conclusionUpdatedAt)}
                   </span>
                 </div>
                 {experiment.conclusionComment ? (
@@ -2876,7 +2877,7 @@ export default function ExperimentDetail() {
                   <div>
                     <p className="text-slate-400">生成时间</p>
                     <p className="mt-1 font-medium text-slate-900">
-                      {latestReportSnapshot.generatedAt ? new Date(latestReportSnapshot.generatedAt).toLocaleString() : '-'}
+                      {formatChineseDateTime(latestReportSnapshot.generatedAt)}
                     </p>
                   </div>
                 </div>
@@ -2990,7 +2991,7 @@ export default function ExperimentDetail() {
                 <p className="text-slate-500 mb-1">审批状态</p>
                 <p className="font-medium text-slate-900">{approvalStatus.label}</p>
                 <p className="mt-1 text-xs text-slate-400">
-                  {experiment.approvalUpdatedAt ? new Date(experiment.approvalUpdatedAt).toLocaleString() : '-'}
+                  {formatChineseDateTime(experiment.approvalUpdatedAt)}
                 </p>
               </div>
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">

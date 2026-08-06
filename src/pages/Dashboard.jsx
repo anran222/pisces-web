@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   AlertTriangle,
@@ -12,7 +12,11 @@ import {
   TrendingUp
 } from 'lucide-react'
 import { analysisAPI, experimentAPI } from '../services/api'
-import { buildDashboardDecisionItems, buildDashboardMetrics } from '../utils/experimentMetrics'
+import {
+  buildDashboardDecisionItems,
+  buildDashboardMetrics,
+  selectDashboardStatisticsTargets,
+} from '../utils/experimentMetrics'
 import {
   getDecisionLabel,
   getExperimentStatusLabel,
@@ -59,15 +63,20 @@ export default function Dashboard() {
   const [experiments, setExperiments] = useState([])
   const [decisionRecords, setDecisionRecords] = useState({})
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [activeInsightPanel, setActiveInsightPanel] = useState('facts')
+  const initialLoadStarted = useRef(false)
 
   useEffect(() => {
+    if (initialLoadStarted.current) return
+    initialLoadStarted.current = true
     loadData()
   }, [])
 
   const loadData = async () => {
     try {
       setLoading(true)
+      setLoadError('')
       const experimentResponse = await experimentAPI.list()
       const experimentList = experimentResponse.data || experimentResponse || []
       setExperiments(experimentList)
@@ -75,7 +84,7 @@ export default function Dashboard() {
       setLoading(false)
 
       const statisticsResults = await Promise.allSettled(
-        experimentList.slice(0, 8).map(async experiment => {
+        selectDashboardStatisticsTargets(experimentList).map(async experiment => {
           const statisticsRes = await analysisAPI.getStatistics(experiment.id)
 
           return [
@@ -93,6 +102,7 @@ export default function Dashboard() {
       console.error('Failed to load workspace data:', error)
       setExperiments([])
       setDecisionRecords({})
+      setLoadError(localizeSystemText(error.response?.data?.message || error.message || '工作台数据加载失败'))
     } finally {
       setLoading(false)
     }
@@ -172,6 +182,18 @@ export default function Dashboard() {
           toneClass="text-[var(--brand)]"
         />
       </section>
+
+      {loadError ? (
+        <section className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={17} />
+            <span>工作台暂时无法读取实验数据：{loadError}</span>
+          </div>
+          <button type="button" className="font-semibold text-amber-900 underline" onClick={loadData}>
+            重新加载
+          </button>
+        </section>
+      ) : null}
 
       <section className="grid grid-cols-1 gap-6 xl:grid-cols-[1.25fr_0.75fr]">
         <div className="glass-card p-6">
