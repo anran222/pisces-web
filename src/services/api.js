@@ -405,6 +405,12 @@ export const variantAPI = {
     api.post('/variants/generate', payload, {
       timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS
     }),
+
+  // 基于当前候选和最近对话修订完整方案
+  refineCandidates: (payload) =>
+    api.post('/variants/refine', payload, {
+      timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS
+    }),
 }
 
 // 数据上报 API

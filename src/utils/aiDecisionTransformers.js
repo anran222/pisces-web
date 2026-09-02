@@ -479,6 +479,52 @@ export const buildVariantCandidatePayload = ({
   return payload
 }
 
+const MAX_REFINEMENT_INSTRUCTION_LENGTH = 1000
+const MAX_REFINEMENT_VARIANT_COUNT = 6
+const MAX_REFINEMENT_VARIANT_LENGTH = 1200
+const MAX_REFINEMENT_MESSAGE_COUNT = 8
+const MAX_REFINEMENT_MESSAGE_LENGTH = 500
+
+const normalizeRefinementVariant = (candidate) => {
+  if (typeof candidate === 'string') {
+    return candidate.trim()
+  }
+  if (!candidate || typeof candidate !== 'object') {
+    return ''
+  }
+  return String(
+    candidate.imageUrl
+      || candidate.url
+      || candidate.rawText
+      || candidate.content
+      || candidate.text
+      || ''
+  ).trim()
+}
+
+export const buildVariantRefinementPayload = ({
+  basePayload = {},
+  currentVariants = [],
+  instruction,
+  conversation = []
+}) => ({
+  ...basePayload,
+  refinementInstruction: String(instruction || '').trim().slice(0, MAX_REFINEMENT_INSTRUCTION_LENGTH),
+  currentVariants: currentVariants
+    .map(normalizeRefinementVariant)
+    .filter(Boolean)
+    .map(variant => variant.slice(0, MAX_REFINEMENT_VARIANT_LENGTH))
+    .slice(0, MAX_REFINEMENT_VARIANT_COUNT),
+  conversation: conversation
+    .filter(message => message && ['USER', 'ASSISTANT'].includes(String(message.role || '').toUpperCase()))
+    .map(message => ({
+      role: String(message.role).toUpperCase(),
+      content: String(message.content || '').trim().slice(0, MAX_REFINEMENT_MESSAGE_LENGTH)
+    }))
+    .filter(message => message.content)
+    .slice(-MAX_REFINEMENT_MESSAGE_COUNT)
+})
+
 const normalizeVariantCandidateText = (candidate) => {
   if (typeof candidate === 'string') {
     return candidate.trim()

@@ -533,6 +533,16 @@ const variantCandidatesResponse = {
   aiModelStrategy: 'production-dashscope-qwen3.7-max-with-token-plan-preview-opt-in',
 };
 
+const refinedVariantCandidatesResponse = {
+  ...variantCandidatesResponse,
+  variants: [
+    '方案名称：权益透明型｜策略方向：先解释保障再引导支付｜候选内容：质检与售后看得见，确认权益后再支付｜实验假设：透明说明可降低支付前疑虑｜实施建议：替换结账页标题和辅助说明｜风险提醒：不扩大实际保障范围',
+    '方案名称：质检可信型｜策略方向：突出平台质检依据｜候选内容：平台质检完成，安心确认支付｜实验假设：明确质检状态可增强商品信任｜实施建议：保持价格和按钮位置不变｜风险提醒：避免使用绝对化质量承诺',
+    '方案名称：售后克制型｜策略方向：用克制表达说明售后｜候选内容：售后范围已说明，确认后继续支付｜实验假设：减少促销感可提升信息可信度｜实施建议：仅调整保障文案与按钮文字｜风险提醒：持续监控退款申请率',
+    '方案名称：决策清晰型｜策略方向：降低结账信息理解成本｜候选内容：权益确认无误，继续完成支付｜实验假设：减少干扰信息可缩短决策路径｜实施建议：收拢结账页辅助信息层级｜风险提醒：避免弱化必要风险提示',
+  ],
+};
+
 function base(data, message = 'ok') {
   return { code: 200, message, data };
 }
@@ -590,6 +600,7 @@ function responseFor(method, url) {
   }
   if (method === 'POST' && pathname === '/api/analysis/experiment/ai-design/v2') return base(aiDesignResponse);
   if (method === 'POST' && pathname === '/api/variants/generate') return base(variantCandidatesResponse, '候选生成成功');
+  if (method === 'POST' && pathname === '/api/variants/refine') return base(refinedVariantCandidatesResponse, '方案修改成功');
   if (method === 'POST' && pathname === '/api/experiments/generator/demo') {
     return base({ qualifiedExperiment: mainExperiment, unqualifiedExperiment: experiments[2] }, '示例实验已生成');
   }
@@ -886,6 +897,18 @@ async function gotoAndCapture(page, route, headingText, fileName, layoutOptions)
   await page.getByText('qwen3.7-max', { exact: true }).waitFor({ timeout: 5000 });
   await stabilize(page);
   await captureWithLayout(page, '09-variant-lab-tongyi-model-evidence.png', HORIZONTAL_WORKSPACE);
+  await page.getByRole('button', { name: /对话修改/ }).click();
+  await page.getByRole('heading', { name: '对话修改方案' }).waitFor({ timeout: 5000 });
+  await stabilize(page);
+  await captureWithLayout(page, '09b-variant-lab-refinement-drawer.png', HORIZONTAL_MODAL);
+  await page.getByRole('button', { name: '语气更克制' }).click();
+  await page.getByRole('button', { name: '发送修改要求' }).click();
+  await page.getByText(/已按本轮要求更新为第 2 版/).waitFor({ timeout: 5000 });
+  await stabilize(page);
+  await captureWithLayout(page, '09c-variant-lab-refinement-conversation.png', HORIZONTAL_MODAL);
+  await page.getByRole('button', { name: '恢复上一版' }).click();
+  await page.getByText(/已恢复第 1 版方案/).waitFor({ timeout: 5000 });
+  await page.getByText(/当前第 1 版/).waitFor({ timeout: 5000 });
 
   writeLayoutAudit();
   } finally {

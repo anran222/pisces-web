@@ -13,7 +13,9 @@ import {
   Image as ImageIcon,
   Lightbulb,
   Loader2,
-  MapPin,
+  MessageSquare,
+  RotateCcw,
+  Send,
   ShieldCheck,
   Sparkles,
   Target,
@@ -27,6 +29,7 @@ import { applicationAPI, variantAPI } from '../services/api'
 import {
   buildDefaultExperimentCreatePayload,
   buildVariantCandidatePayload,
+  buildVariantRefinementPayload,
   normalizeVariantGenerationModelEvidence,
   normalizeVariantPlans
 } from '../utils/aiDecisionTransformers'
@@ -55,6 +58,16 @@ const DELIVERY_STANDARDS = [
 
 const TONE_OPTIONS = ['专业可信', '简洁直接', '温和有说服力', '理性数据化', '轻松友好']
 const MAX_REFERENCE_IMAGE_BYTES = 10 * 1024 * 1024
+const MAX_REVISION_HISTORY_COUNT = 5
+const TEXT_REFINEMENT_SUGGESTIONS = ['语气更克制', '强化质检差异', '减少促销表达', '让三个方案差异更明显']
+const IMAGE_REFINEMENT_SUGGESTIONS = ['减少装饰文字', '突出手机成色', '保留商品角度', '增强质检信息层级']
+
+let conversationMessageSequence = 0
+
+const createConversationMessage = (role, content) => {
+  conversationMessageSequence += 1
+  return { id: `revision-message-${conversationMessageSequence}`, role, content }
+}
 
 const buildInitialForm = () => {
   const defaultExperiment = buildDefaultExperimentCreatePayload()
@@ -109,6 +122,12 @@ export default function VariantGenerator() {
   const [result, setResult] = useState(null)
   const [copiedPlanId, setCopiedPlanId] = useState('')
   const [preparingExperiment, setPreparingExperiment] = useState(false)
+  const [refinementOpen, setRefinementOpen] = useState(false)
+  const [refinementInstruction, setRefinementInstruction] = useState('')
+  const [refining, setRefining] = useState(false)
+  const [conversation, setConversation] = useState([])
+  const [revisionHistory, setRevisionHistory] = useState([])
+  const [revisionNumber, setRevisionNumber] = useState(1)
 
   useEffect(() => {
     loadApplicationSpaces()
@@ -261,7 +280,18 @@ export default function VariantGenerator() {
       count: variantType === 'IMAGE' ? Math.min(current.count, 4) : current.count
     }))
     setResult(null)
+    setConversation([])
+    setRevisionHistory([])
+    setRevisionNumber(1)
+    setRefinementInstruction('')
+    setRefinementOpen(false)
   }
+
+  const buildCurrentCandidatePayload = () => buildVariantCandidatePayload({
+    ...form,
+    applicationName: selectedApplication?.displayName || form.appId,
+    guardrailMetrics: selectedGuardrailMetrics.map(metric => `${metric.name}（${metric.key}）`).join('、'),
+  })
 
   const handleGenerate = async () => {
     if (!formReady) {
@@ -271,20 +301,73 @@ export default function VariantGenerator() {
 
     try {
       setLoading(true)
-      const payload = buildVariantCandidatePayload({
-        ...form,
-        applicationName: selectedApplication?.displayName || form.appId,
-        guardrailMetrics: selectedGuardrailMetrics.map(metric => `${metric.name}（${metric.key}）`).join('、'),
-      })
+      const payload = buildCurrentCandidatePayload()
       const response = await variantAPI.generateCandidates(payload)
       const nextResult = response.data || response
       setResult(nextResult)
+      setConversation([])
+      setRevisionHistory([])
+      setRevisionNumber(1)
+      setRefinementInstruction('')
     } catch (error) {
       alert('生成失败：' + localizeSystemText(error.response?.data?.message || error.message))
       setResult(null)
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleRefine = async () => {
+    const instruction = refinementInstruction.trim()
+    if (!result || plans.length === 0 || !instruction) {
+      return
+    }
+
+    try {
+      setRefining(true)
+      const payload = buildVariantRefinementPayload({
+        basePayload: buildCurrentCandidatePayload(),
+        currentVariants: result.variants || plans,
+        instruction,
+        conversation,
+      })
+      const response = await variantAPI.refineCandidates(payload)
+      const nextResult = response.data || response
+      const nextVersion = revisionNumber + 1
+      setRevisionHistory(current => [
+        ...current.slice(-(MAX_REVISION_HISTORY_COUNT - 1)),
+        { result, conversation, version: revisionNumber },
+      ])
+      setResult(nextResult)
+      setRevisionNumber(nextVersion)
+      setConversation(current => [
+        ...current,
+        createConversationMessage('USER', instruction),
+        createConversationMessage(
+          'ASSISTANT',
+          `已按本轮要求更新为第 ${nextVersion} 版，${nextResult.count || plans.length} 个完整方案已同步替换。`
+        ),
+      ])
+      setRefinementInstruction('')
+    } catch (error) {
+      alert('修改方案失败：' + localizeSystemText(error.response?.data?.message || error.message))
+    } finally {
+      setRefining(false)
+    }
+  }
+
+  const restorePreviousRevision = () => {
+    const previousRevision = revisionHistory[revisionHistory.length - 1]
+    if (!previousRevision || refining) {
+      return
+    }
+    setResult(previousRevision.result)
+    setRevisionNumber(previousRevision.version)
+    setRevisionHistory(current => current.slice(0, -1))
+    setConversation([
+      ...previousRevision.conversation,
+      createConversationMessage('ASSISTANT', `已恢复第 ${previousRevision.version} 版方案，可以继续提出修改。`),
+    ])
   }
 
   const copyPlan = async (plan) => {
@@ -342,7 +425,8 @@ export default function VariantGenerator() {
   }
 
   return (
-    <div className="space-y-4">
+    <>
+      <div className="space-y-4">
       <section className="glass-card flex flex-wrap items-center justify-between gap-4 px-5 py-4">
         <div>
           <div className="eyebrow mb-2">实验方案工作台</div>
@@ -542,6 +626,13 @@ export default function VariantGenerator() {
               {modelEvidence ? <ModelEvidenceBar evidence={modelEvidence} /> : null}
               {candidateCount ? <span className="badge border border-blue-200 bg-blue-50 text-[var(--brand)]">{candidateCount} 个方案</span> : null}
               {result && plans.length > 0 ? (
+                <button type="button" className="btn-secondary py-2" onClick={() => setRefinementOpen(true)}>
+                  <MessageSquare size={16} />
+                  对话修改
+                  <span className="text-xs text-slate-400">第 {revisionNumber} 版</span>
+                </button>
+              ) : null}
+              {result && plans.length > 0 ? (
                 <button type="button" className="btn-primary py-2" onClick={usePlansInExperiment} disabled={preparingExperiment}>
                   {preparingExperiment ? <Loader2 size={16} className="animate-spin" /> : <ArrowRight size={16} />}
                   {preparingExperiment ? '正在填充实验' : `全部 ${plans.length} 个方案用于新实验`}
@@ -599,6 +690,123 @@ export default function VariantGenerator() {
           </div>
         </section>
       </div>
+      </div>
+
+      <RefinementDrawer
+        open={refinementOpen}
+        onClose={() => setRefinementOpen(false)}
+        conversation={conversation}
+        instruction={refinementInstruction}
+        onInstructionChange={setRefinementInstruction}
+        onSubmit={handleRefine}
+        refining={refining}
+        candidateCount={plans.length}
+        version={revisionNumber}
+        canRestore={revisionHistory.length > 0}
+        onRestore={restorePreviousRevision}
+        suggestions={form.variantType === 'IMAGE' ? IMAGE_REFINEMENT_SUGGESTIONS : TEXT_REFINEMENT_SUGGESTIONS}
+      />
+    </>
+  )
+}
+
+function RefinementDrawer({
+  open,
+  onClose,
+  conversation,
+  instruction,
+  onInstructionChange,
+  onSubmit,
+  refining,
+  candidateCount,
+  version,
+  canRestore,
+  onRestore,
+  suggestions,
+}) {
+  if (!open) return null
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/20" role="presentation" onMouseDown={onClose}>
+      <aside
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="refinement-dialog-title"
+        className="ml-auto flex h-full w-full max-w-[500px] flex-col border-l border-slate-200 bg-white shadow-2xl"
+        onMouseDown={event => event.stopPropagation()}
+      >
+        <header className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <MessageSquare size={18} className="text-[var(--brand)]" />
+              <h2 id="refinement-dialog-title" className="text-lg font-bold text-slate-900">对话修改方案</h2>
+            </div>
+            <p className="mt-2 text-sm text-slate-500">当前第 {version} 版 · {candidateCount} 个候选方案</p>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} title="关闭对话修改">
+            <X size={18} />
+          </button>
+        </header>
+
+        <div className="min-h-0 flex-1 overflow-y-auto bg-slate-50 px-5 py-4">
+          {conversation.length === 0 ? (
+            <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm leading-6 text-blue-800">
+              当前完整方案已加入对话上下文。后续修改会保留未明确要求调整的内容。
+            </div>
+          ) : null}
+          <div className="space-y-3">
+            {conversation.map(message => (
+              <div
+                key={message.id}
+                className={clsx('flex', message.role === 'USER' ? 'justify-end' : 'justify-start')}
+              >
+                <div className={clsx(
+                  'max-w-[88%] rounded-lg px-4 py-3 text-sm leading-6',
+                  message.role === 'USER'
+                    ? 'bg-[var(--brand)] text-white'
+                    : 'border border-slate-200 bg-white text-slate-700'
+                )}>
+                  {message.content}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <form className="border-t border-slate-200 bg-white p-5" onSubmit={(event) => { event.preventDefault(); onSubmit() }}>
+          <div className="mb-3 flex flex-wrap gap-2">
+            {suggestions.map(suggestion => (
+              <button
+                key={suggestion}
+                type="button"
+                className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 hover:border-blue-200 hover:bg-blue-50 hover:text-[var(--brand)]"
+                onClick={() => onInstructionChange(suggestion)}
+                disabled={refining}
+              >
+                {suggestion}
+              </button>
+            ))}
+          </div>
+          <textarea
+            className="textarea min-h-24 resize-none"
+            value={instruction}
+            onChange={event => onInstructionChange(event.target.value)}
+            placeholder="例如：保留第二个方案方向，其他方案减少促销感，并把质检保障放在标题前半段"
+            maxLength={1000}
+            disabled={refining}
+          />
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <button type="button" className="btn-secondary" onClick={onRestore} disabled={!canRestore || refining}>
+              <RotateCcw size={16} />
+              恢复上一版
+            </button>
+            <button type="submit" className="btn-primary" disabled={!instruction.trim() || refining}>
+              {refining ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+              {refining ? '正在修改方案' : '发送修改要求'}
+            </button>
+          </div>
+        </form>
+      </aside>
     </div>
   )
 }

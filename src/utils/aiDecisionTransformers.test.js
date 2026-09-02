@@ -19,6 +19,7 @@ import {
   METRIC_DENOMINATOR_TYPES,
   METRIC_DENOMINATOR_TYPE_OPTIONS,
   buildVariantCandidatePayload,
+  buildVariantRefinementPayload,
   normalizeVariantCandidates,
   normalizeVariantPlans,
   normalizeVariantGenerationModelEvidence
@@ -508,6 +509,37 @@ test('buildVariantCandidatePayload carries complete experiment plan context', ()
   assert.equal(payload.sourceContext.endTime, '2026-08-19T09:00')
   assert.equal(payload.sourceContext.riskGuardrail, '不得夸大质保范围')
   assert.equal(payload.sourceContext.brief, '当前首屏信息密度偏低')
+})
+
+test('buildVariantRefinementPayload keeps bounded current plans and recent conversation', () => {
+  const conversation = Array.from({ length: 10 }, (_, index) => ({
+    role: index % 2 === 0 ? 'user' : 'assistant',
+    content: `第 ${index + 1} 条消息`
+  }))
+  const payload = buildVariantRefinementPayload({
+    basePayload: {
+      variantType: 'TEXT',
+      count: 3,
+      sourceContext: { appId: 'shop-app' }
+    },
+    currentVariants: [
+      { rawText: '当前文本方案一' },
+      { imageUrl: 'https://example.com/current.png' },
+      '',
+    ],
+    instruction: '  保留第二个方向，语气更克制  ',
+    conversation
+  })
+
+  assert.equal(payload.refinementInstruction, '保留第二个方向，语气更克制')
+  assert.deepEqual(payload.currentVariants, [
+    '当前文本方案一',
+    'https://example.com/current.png'
+  ])
+  assert.equal(payload.conversation.length, 8)
+  assert.deepEqual(payload.conversation[0], { role: 'USER', content: '第 3 条消息' })
+  assert.deepEqual(payload.conversation[7], { role: 'ASSISTANT', content: '第 10 条消息' })
+  assert.equal(payload.sourceContext.appId, 'shop-app')
 })
 
 test('normalizeVariantCandidates keeps string candidates renderable', () => {
